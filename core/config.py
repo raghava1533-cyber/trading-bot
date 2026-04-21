@@ -1,0 +1,11 @@
+# config.py
+INDEX = "NIFTY"
+LOT_SIZE = 50
+
+TARGET_DELTA = 0.15
+DELTA_HEDGE_THRESHOLD = 0.05
+
+RISK_FREE = 0.06
+EXPIRY_DAYS = 5
+
+REDIS_URL = "redis://localhost:6379"
