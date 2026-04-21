@@ -10,37 +10,44 @@ def fetch_candles(days=30):
     if df is None or df.empty:
         raise RuntimeError("No data from yfinance")
 
-    # ✅ Flatten columns safely
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0].lower() for col in df.columns]
-    else:
-        df.columns = [str(c).lower() for c in df.columns]
-
-    # ✅ Reset index
+    # 🔥 FORCE reset index FIRST
     df = df.reset_index()
 
-    # 🔥 UNIVERSAL timestamp fix
-    possible_cols = ["datetime", "date", "index"]
+    # 🔥 FIX MultiIndex properly
+    new_cols = []
+    for col in df.columns:
+        if isinstance(col, tuple):
+            # take first non-empty part
+            clean = col[0] if col[0] else col[1]
+        else:
+            clean = col
+        new_cols.append(str(clean).lower())
 
-    found = None
-    for col in possible_cols:
-        if col in df.columns:
-            found = col
-            break
+    df.columns = new_cols
 
-    if found is None:
-        raise RuntimeError(f"No time column found. Columns: {df.columns}")
+    # 🔍 DEBUG (remove later)
+    print("Fixed columns:", df.columns)
 
-    df.rename(columns={found: "timestamp"}, inplace=True)
+    # 🔥 TIMESTAMP FIX
+    if "datetime" in df.columns:
+        df.rename(columns={"datetime": "timestamp"}, inplace=True)
+    elif "date" in df.columns:
+        df.rename(columns={"date": "timestamp"}, inplace=True)
+    elif "index" in df.columns:
+        df.rename(columns={"index": "timestamp"}, inplace=True)
+    else:
+        raise RuntimeError(f"No time column found AFTER FIX. Columns: {df.columns}")
 
-    # ✅ Ensure datetime format
+    # ✅ Convert timestamp
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # ✅ Clean data
+    # ✅ Clean
     df = df.dropna(subset=["timestamp", "close"])
     df = df.drop_duplicates(subset=["timestamp"])
-
-    # Optional sort
     df = df.sort_values("timestamp")
+
+    # 🔥 volume fallback (important for your ML)
+    if "volume" not in df.columns or df["volume"].sum() == 0:
+        df["volume"] = 1
 
     return df

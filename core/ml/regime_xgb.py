@@ -17,7 +17,8 @@ def compute_features(df):
 
 def label(df):
     df["future"] = df["close"].shift(-3)
-    df["y"] = np.where(df["future"] > df["close"], "BULL", "BEAR")
+    # 1 for BULL, 0 for BEAR
+    df["y"] = np.where(df["future"] > df["close"], 1, 0)
     return df.dropna()
 
 
@@ -52,4 +53,6 @@ def predict_regime(model, df):
         return "SIDE"
 
     X = df[["ret", "ema", "vol"]].iloc[[-1]]
-    return model.predict(X)[0]
+    pred = model.predict(X)[0]
+    # Map back to string label
+    return "BULL" if pred == 1 else "BEAR"
