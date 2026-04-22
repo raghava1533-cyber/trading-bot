@@ -1,10 +1,5 @@
+from scipy.stats import norm
 import math
-
-def greeks_fd(spot, ce_strike, pe_strike):
-    # simple finite difference placeholder
-    return {
-        "delta": (spot - ce_strike) * 0.001,
-        "gamma": 0.0001,
-        "theta": -0.01,
-        "vega": 0.05
-    }
+def black_scholes_delta(S, K, T, r, sigma, opt_type):
+    d1 = (math.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*math.sqrt(T))
+    return norm.cdf(d1) if opt_type == "CE" else norm.cdf(d1) - 1

@@ -1,4 +1,4 @@
-from ml.regime_xgb import train_xgb
+from ml.regime_xgb import train
 
 def walk_forward(df, features):
     results = []
