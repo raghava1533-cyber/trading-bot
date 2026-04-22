@@ -5,6 +5,7 @@ import upstox_client
 from upstox_client import Configuration, ApiClient
 from upstox_client.api.market_quote_api import MarketQuoteApi
 from upstox_client.api.options_api import OptionsApi
+from upstox_client.api.instruments_api import InstrumentsApi
 
 # Load .env if present
 load_dotenv()
@@ -27,6 +28,7 @@ class Broker:
 		self.api_client = ApiClient(configuration=config)
 		self.market_api = MarketQuoteApi(self.api_client)
 		self.options_api = OptionsApi(self.api_client)
+		self.instruments_api = InstrumentsApi(self.api_client)
 
 
 
@@ -56,9 +58,20 @@ class Broker:
 		Returns option chain (LIVE) using Upstox API v2
 		"""
 		try:
-			# You need the instrument_key for the underlying symbol (e.g., NIFTY)
-			# This is usually in the format 'NSE_INDEX|NIFTY' or 'NSE_FO|NIFTY'
-			instrument_key = f"NSE_INDEX|{symbol.upper()}"
+			# Dynamically fetch the correct instrument_key for the symbol
+			search_resp = self.instruments_api.search_instrument(query=symbol.upper(), exchanges="NSE", segments="NSE_INDEX")
+			instrument_key = None
+			if hasattr(search_resp, 'data') and search_resp.data:
+				# Find the first matching instrument_key
+				for item in search_resp.data:
+					if item.get('symbol') == symbol.upper():
+						instrument_key = item.get('instrument_key')
+						break
+				if not instrument_key:
+					instrument_key = search_resp.data[0].get('instrument_key')
+			if not instrument_key:
+				print(f"[ERROR] get_option_chain: Could not find instrument_key for {symbol}")
+				return [], None
 			response = self.options_api.get_option_contracts(instrument_key)
 			chain = response.data if hasattr(response, 'data') else []
 			print(f"[DEBUG] get_option_chain: {len(chain)} strikes fetched.")
