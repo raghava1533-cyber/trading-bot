@@ -73,9 +73,31 @@ class Broker:
 				print(f"[ERROR] get_option_chain: Could not find instrument_key for {symbol}")
 				return [], None
 			response = self.options_api.get_option_contracts(instrument_key)
-			chain = response.data if hasattr(response, 'data') else []
-			print(f"[DEBUG] get_option_chain: {len(chain)} strikes fetched.")
-			return chain, None
+			raw_chain = response.data if hasattr(response, 'data') else []
+			print(f"[DEBUG] get_option_chain: {len(raw_chain)} strikes fetched.")
+			# Transform to expected structure
+			chain = []
+			spot = None
+			for row in raw_chain:
+				strike = getattr(row, 'strike_price', None)
+				if spot is None:
+					spot = getattr(row, 'underlying_spot_price', None)
+				ce = getattr(row, 'call_options', None)
+				pe = getattr(row, 'put_options', None)
+				chain.append({
+					"strikePrice": strike,
+					"CE": {
+						"ltp": getattr(ce, 'last_traded_price', None) if ce else None,
+						"oi": getattr(ce, 'open_interest', None) if ce else None,
+						"iv": getattr(ce, 'implied_volatility', None) if ce else None,
+					},
+					"PE": {
+						"ltp": getattr(pe, 'last_traded_price', None) if pe else None,
+						"oi": getattr(pe, 'open_interest', None) if pe else None,
+						"iv": getattr(pe, 'implied_volatility', None) if pe else None,
+					}
+				})
+			return chain, spot
 		except Exception as e:
 			print(f"[ERROR] get_option_chain: {e}")
 			return [], None
