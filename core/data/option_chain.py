@@ -1,30 +1,49 @@
-import requests
+from nsepython import option_chain
+import time
 
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
+def get_nse_option_chain(symbol="NIFTY", retries=3):
+    for attempt in range(retries):
+        try:
+            data = option_chain(symbol)
 
-def get_nse_option_chain(index="NIFTY"):
-    # Simple in-memory cache for 30 seconds
-    if not hasattr(get_nse_option_chain, "_cache"):
-        get_nse_option_chain._cache = {"data": None, "spot": 0, "last_fetch": None}
-    import time
-    now = time.time()
-    cache = get_nse_option_chain._cache
-    if cache["data"] is not None and cache["last_fetch"] and now - cache["last_fetch"] < 30:
-        return cache["data"], cache["spot"]
-    try:
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index}"
-        session.get("https://www.nseindia.com")  # cookie
-        r = session.get(url, timeout=5)
-        data = r.json()
-        records = data.get("records", {})
-        chain = records.get("data", [])
-        spot = records.get("underlyingValue", 0)
-        # Update cache
-        cache["data"] = chain
-        cache["spot"] = spot
-        cache["last_fetch"] = now
-        return chain, spot
-    except Exception as e:
-        # Optionally log error here
-        return [], 0
+            if not data or "records" not in data:
+                print("⚠️ NSE empty response, retrying...")
+                time.sleep(1)
+                continue
+
+            records = data["records"]
+            spot = records.get("underlyingValue", 0)
+
+            chain = []
+
+            for row in records.get("data", []):
+                strike = row.get("strikePrice")
+
+                ce = row.get("CE", {})
+                pe = row.get("PE", {})
+
+                chain.append({
+                    "strikePrice": strike,
+                    "CE": {
+                        "ltp": ce.get("lastPrice"),
+                        "oi": ce.get("openInterest"),
+                        "iv": ce.get("impliedVolatility"),
+                    },
+                    "PE": {
+                        "ltp": pe.get("lastPrice"),
+                        "oi": pe.get("openInterest"),
+                        "iv": pe.get("impliedVolatility"),
+                    }
+                })
+
+            if not chain:
+                print("⚠️ Empty chain parsed")
+                continue
+
+            return chain, spot
+
+        except Exception as e:
+            print(f"⚠️ NSE fetch error: {e}")
+            time.sleep(1)
+
+    return None, 0

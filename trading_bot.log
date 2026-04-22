@@ -1,0 +1,154 @@
+2026-04-22 11:47:24,227 | INFO | Bot started
+2026-04-22 11:47:39,855 | INFO | Cycle start
+2026-04-22 11:47:41,007 | INFO | Regime: BULL
+2026-04-22 11:47:41,007 | INFO | Spot: 22500
+2026-04-22 11:47:41,007 | INFO | MTM PnL: 0
+2026-04-22 11:47:41,007 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 11:47:41,007 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 11:47:41,007 | INFO | Executing BULL_PUT
+2026-04-22 11:47:41,007 | INFO | Trade added: BULL_PUT
+2026-04-22 11:48:11,017 | INFO | Cycle start
+2026-04-22 11:48:11,029 | INFO | Regime: BULL
+2026-04-22 11:48:11,033 | INFO | Spot: 22500
+2026-04-22 11:48:11,034 | INFO | MTM PnL: 0
+2026-04-22 11:48:11,034 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:48:11,035 | WARNING | Cooldown active (30s)
+2026-04-22 11:48:41,052 | INFO | Cycle start
+2026-04-22 11:48:41,402 | INFO | Regime: BULL
+2026-04-22 11:48:41,407 | INFO | Spot: 22500
+2026-04-22 11:48:41,407 | INFO | MTM PnL: 0
+2026-04-22 11:48:41,407 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:48:41,407 | WARNING | Cooldown active (60s)
+2026-04-22 11:49:11,418 | INFO | Cycle start
+2026-04-22 11:49:11,448 | INFO | Regime: BULL
+2026-04-22 11:49:11,448 | INFO | Spot: 22500
+2026-04-22 11:49:11,450 | INFO | MTM PnL: 0
+2026-04-22 11:49:11,450 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:49:11,450 | WARNING | Cooldown active (90s)
+2026-04-22 11:49:26,921 | INFO | Bot stopped
+2026-04-22 11:54:27,948 | INFO | Bot started
+2026-04-22 11:55:19,456 | INFO | Cycle start
+2026-04-22 11:55:20,779 | INFO | Regime: BULL
+2026-04-22 11:55:20,779 | INFO | Spot: 22500
+2026-04-22 11:55:20,779 | ERROR | Error in cycle
+2026-04-22 11:55:50,788 | INFO | Cycle start
+2026-04-22 11:55:50,807 | INFO | Regime: BULL
+2026-04-22 11:55:50,807 | INFO | Spot: 22500
+2026-04-22 11:55:50,809 | ERROR | Error in cycle
+2026-04-22 11:56:20,829 | INFO | Cycle start
+2026-04-22 11:56:21,290 | INFO | Regime: BULL
+2026-04-22 11:56:21,290 | INFO | Spot: 22500
+2026-04-22 11:56:21,290 | ERROR | Error in cycle
+2026-04-22 11:56:45,270 | INFO | Bot stopped
+2026-04-22 11:57:33,477 | INFO | Bot started
+2026-04-22 11:57:51,014 | INFO | Cycle start
+2026-04-22 11:57:52,317 | INFO | Regime: BULL
+2026-04-22 11:57:52,319 | INFO | Spot: 22500
+2026-04-22 11:57:52,319 | INFO | MTM PnL: 0
+2026-04-22 11:57:52,319 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 11:57:52,321 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 11:57:52,321 | INFO | Executing BULL_PUT
+2026-04-22 11:57:52,321 | INFO | Trade executed: BULL_PUT
+2026-04-22 11:57:52,321 | INFO | Cycle complete
+
+2026-04-22 11:58:22,334 | INFO | Cycle start
+2026-04-22 11:58:22,355 | INFO | Regime: BULL
+2026-04-22 11:58:22,355 | INFO | Spot: 22500
+2026-04-22 11:58:22,355 | INFO | MTM PnL: 0
+2026-04-22 11:58:22,357 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:58:22,358 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 11:58:52,364 | INFO | Cycle start
+2026-04-22 11:58:52,770 | INFO | Regime: BULL
+2026-04-22 11:58:52,772 | INFO | Spot: 22500
+2026-04-22 11:58:52,772 | INFO | MTM PnL: 0
+2026-04-22 11:58:52,774 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:58:52,776 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 11:59:22,785 | INFO | Cycle start
+2026-04-22 11:59:22,808 | INFO | Regime: BULL
+2026-04-22 11:59:22,810 | INFO | Spot: 22500
+2026-04-22 11:59:22,810 | INFO | MTM PnL: 0
+2026-04-22 11:59:22,810 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:59:22,810 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 11:59:52,826 | INFO | Cycle start
+2026-04-22 11:59:53,182 | INFO | Regime: BULL
+2026-04-22 11:59:53,182 | INFO | Spot: 22500
+2026-04-22 11:59:53,182 | INFO | MTM PnL: 0
+2026-04-22 11:59:53,182 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 11:59:53,188 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:00:23,196 | INFO | Cycle start
+2026-04-22 12:00:23,251 | INFO | Regime: BULL
+2026-04-22 12:00:23,252 | INFO | Spot: 22500
+2026-04-22 12:00:23,252 | INFO | MTM PnL: 0
+2026-04-22 12:00:23,252 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 12:00:23,254 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:00:53,255 | INFO | Cycle start
+2026-04-22 12:00:53,572 | INFO | Regime: BULL
+2026-04-22 12:00:53,572 | INFO | Spot: 22500
+2026-04-22 12:00:53,574 | INFO | MTM PnL: 0
+2026-04-22 12:00:53,574 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 12:00:53,574 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:01:23,584 | INFO | Cycle start
+2026-04-22 12:01:23,598 | INFO | Regime: BULL
+2026-04-22 12:01:23,598 | INFO | Spot: 22500
+2026-04-22 12:01:23,598 | INFO | MTM PnL: 0
+2026-04-22 12:01:23,598 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 12:01:23,598 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:01:53,607 | INFO | Cycle start
+2026-04-22 12:01:53,849 | INFO | Regime: BULL
+2026-04-22 12:01:53,851 | INFO | Spot: 22500
+2026-04-22 12:01:53,852 | INFO | MTM PnL: 0
+2026-04-22 12:01:53,852 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 1}
+2026-04-22 12:01:53,852 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:02:03,342 | INFO | Bot stopped
+2026-04-22 12:03:31,081 | INFO | Bot started
+2026-04-22 12:03:59,335 | INFO | Cycle start
+2026-04-22 12:04:00,834 | INFO | Regime: BULL
+2026-04-22 12:04:00,834 | INFO | Spot: 22500
+2026-04-22 12:04:00,836 | INFO | MTM PnL: 0
+2026-04-22 12:04:00,836 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 12:04:00,836 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:04:00,836 | INFO | Executing BULL_PUT
+2026-04-22 12:04:00,836 | INFO | Trade executed: BULL_PUT
+2026-04-22 12:04:00,838 | INFO | Cycle complete
+
+2026-04-22 12:04:30,849 | INFO | Cycle start
+2026-04-22 12:04:30,867 | INFO | Regime: BULL
+2026-04-22 12:04:30,868 | INFO | Spot: 22500
+2026-04-22 12:04:30,868 | INFO | MTM PnL: -23.160000000000004
+2026-04-22 12:04:30,868 | INFO | PnL Summary: {'realized': 0, 'unrealized': -23.160000000000004, 'total': -23.160000000000004, 'open_positions': 1}
+2026-04-22 12:04:30,869 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:05:00,886 | INFO | Cycle start
+2026-04-22 12:05:01,219 | INFO | Regime: BEAR
+2026-04-22 12:05:01,222 | INFO | Spot: 22500
+2026-04-22 12:05:01,222 | INFO | MTM PnL: -25.15
+2026-04-22 12:05:01,222 | INFO | PnL Summary: {'realized': 0, 'unrealized': -25.15, 'total': -25.15, 'open_positions': 1}
+2026-04-22 12:05:01,224 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:05:31,224 | INFO | Cycle start
+2026-04-22 12:05:31,240 | INFO | Regime: BEAR
+2026-04-22 12:05:31,247 | INFO | Spot: 22500
+2026-04-22 12:05:31,251 | INFO | MTM PnL: 20.15
+2026-04-22 12:05:31,251 | INFO | PnL Summary: {'realized': 0, 'unrealized': 20.15, 'total': 20.15, 'open_positions': 1}
+2026-04-22 12:05:31,251 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:06:01,256 | INFO | Cycle start
+2026-04-22 12:06:01,532 | INFO | Regime: BEAR
+2026-04-22 12:06:01,532 | INFO | Spot: 22500
+2026-04-22 12:06:01,532 | INFO | MTM PnL: -92.73
+2026-04-22 12:06:01,534 | INFO | PnL Summary: {'realized': 0, 'unrealized': -92.73, 'total': -92.73, 'open_positions': 1}
+2026-04-22 12:06:01,534 | INFO | Greeks: {'delta': -0.05, 'gamma': 0.0001, 'theta': -0.01, 'vega': 0.05}
+2026-04-22 12:06:05,785 | INFO | Bot stopped
+2026-04-22 12:07:38,147 | INFO | Bot started
+2026-04-22 12:07:45,950 | INFO | Cycle start
+2026-04-22 12:07:47,677 | INFO | Regime: BEAR
+2026-04-22 12:07:49,409 | ERROR | Error in cycle
+2026-04-22 12:08:19,489 | INFO | Cycle start
+2026-04-22 12:08:19,514 | INFO | Regime: BEAR
+2026-04-22 12:08:21,209 | ERROR | Error in cycle
+2026-04-22 12:08:26,971 | INFO | Bot stopped
+2026-04-22 12:14:12,551 | INFO | Bot started
+2026-04-22 12:14:39,490 | INFO | Cycle start
+2026-04-22 12:14:42,247 | INFO | Regime: BULL
+2026-04-22 12:14:43,949 | ERROR | Error in cycle
+2026-04-22 12:15:13,988 | INFO | Cycle start
+2026-04-22 12:15:14,008 | INFO | Regime: BULL
+2026-04-22 12:15:15,641 | ERROR | Error in cycle
+2026-04-22 12:15:21,353 | INFO | Bot stopped
