@@ -66,6 +66,13 @@ class Broker:
 				except Exception as e:
 					print(f"[DEBUG] get_spot: instrument {instrument} failed: {e}")
 			print(f"[ERROR] get_spot: All instrument keys failed for {symbol}")
+			# Fallback: Try to get spot from option chain data
+			print("[DEBUG] get_spot: Falling back to option chain data for spot price.")
+			chain, spot = self.get_option_chain(symbol)
+			if spot is not None:
+				print(f"[DEBUG] get_spot: Fallback spot from option chain: {spot}")
+				return spot
+			print(f"[ERROR] get_spot: No spot price available for {symbol}")
 			return None
 		except Exception as e:
 			print(f"[ERROR] get_spot: {e}")
