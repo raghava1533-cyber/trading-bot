@@ -1,157 +1,274 @@
-# Upstox Broker integration
 import os
+import gzip
+import csv
+import io
+import time
+import json
+import logging
+import requests
+from collections import defaultdict
 from dotenv import load_dotenv
-import upstox_client
+
 from upstox_client import Configuration, ApiClient
 from upstox_client.api.market_quote_api import MarketQuoteApi
-from upstox_client.api.options_api import OptionsApi
-from upstox_client.api.instruments_api import InstrumentsApi
+from upstox_client.api.order_api import OrderApi
 
-# Load .env if present
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 class Broker:
-	def __init__(self):
-		print("✅ Upstox Broker initializing...")
+    def __init__(self):
+        logging.info("✅ Upstox Broker initializing...")
 
-		# ENV CONFIG (fallback to input)
-		self.api_key = os.getenv("UPSTOX_API_KEY") or input("Enter Upstox API Key: ").strip()
-		self.api_secret = os.getenv("UPSTOX_API_SECRET") or input("Enter Upstox API Secret: ").strip()
-		self.redirect_uri = os.getenv("UPSTOX_REDIRECT_URI") or input("Enter Upstox Redirect URI: ").strip()
-		self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN") or input("Enter Upstox Access Token: ").strip()
+        self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN")
+        if not self.access_token:
+            raise Exception("❌ Missing UPSTOX_ACCESS_TOKEN")
 
-		# Upstox API v2 SDK client setup
-		config = Configuration()
-		config.access_token = self.access_token
-		self.api_client = ApiClient(configuration=config)
-		self.market_api = MarketQuoteApi(self.api_client)
-		self.options_api = OptionsApi(self.api_client)
-		self.instruments_api = InstrumentsApi(self.api_client)
+        config = Configuration()
+        config.access_token = self.access_token
 
+        self.api_client = ApiClient(configuration=config)
+        self.market_api = MarketQuoteApi(self.api_client)
+        self.order_api = OrderApi(self.api_client)
 
+        self.instrument_cache = None
+        self.instrument_file = "instruments_cache.json"
 
-	def login(self):
-		print("[INFO] Upstox login is handled via access token. Use Upstox web flow to generate and set it in .env.")
+    # ---------------------------------------------------
+    # SAFE LTP (SDK COMPATIBLE)
+    # ---------------------------------------------------
+    def safe_ltp(self, keys):
+        try:
+            return self.market_api.ltp(symbol=keys, api_version="v2")
+        except TypeError:
+            return self.market_api.ltp(symbol=keys)
 
+    # ---------------------------------------------------
+    # LOAD INSTRUMENT MASTER (ROBUST + CACHE)
+    # ---------------------------------------------------
+    def load_instruments(self):
+        # 1. Try memory cache
+        if self.instrument_cache:
+            return self.instrument_cache
 
+        # 2. Try local file cache
+        if os.path.exists(self.instrument_file):
+            try:
+                with open(self.instrument_file, "r") as f:
+                    data = json.load(f)
+                    self.instrument_cache = data
+                    logging.info(f"✅ Loaded instruments from file ({len(data)})")
+                    return data
+            except Exception:
+                logging.warning("⚠️ Failed to read local cache, re-downloading...")
 
-	def get_spot(self, symbol="NIFTY"):
-		"""
-		Returns spot price (LIVE) using Upstox API v2
-		"""
-		try:
-			# Try all possible instrument key formats for spot price
-			instruments = [
-				f"NSE_INDEX|{symbol.upper()}",
-				f"NSE_FO|{symbol.upper()}",
-				f"NSE_EQ|{symbol.upper()}"
-			]
-			for instrument in instruments:
-				print(f"[DEBUG] Trying instrument: {instrument}")
-				try:
-					response = self.market_api.ltp(symbol=instrument, api_version="v2")
-					if hasattr(response, 'data') and response.data:
-						print(f"[DEBUG] get_spot: response.data = {response.data}")
-						if isinstance(response.data, dict):
-							ltp_obj = list(response.data.values())[0]
-							ltp = getattr(ltp_obj, 'last_price', None)
-						elif isinstance(response.data, list):
-							ltp_obj = response.data[0]
-							ltp = getattr(ltp_obj, 'last_price', None)
-						print(f"[DEBUG] get_spot: {ltp}")
-						if ltp is not None:
-							return float(ltp)
-				except Exception as e:
-					print(f"[DEBUG] get_spot: instrument {instrument} failed: {e}")
-			print(f"[ERROR] get_spot: All instrument keys failed for {symbol}")
-			# Fallback: Try to get spot from option chain data
-			print("[DEBUG] get_spot: Falling back to option chain data for spot price.")
-			chain, spot = self.get_option_chain(symbol)
-			if spot is not None:
-				print(f"[DEBUG] get_spot: Fallback spot from option chain: {spot}")
-				return spot
-			print(f"[ERROR] get_spot: No spot price available for {symbol}")
-			return None
-		except Exception as e:
-			print(f"[ERROR] get_spot: {e}")
-			return None
+        # 3. Download from Upstox (correct URL + gzip CSV)
+        logging.info("📥 Downloading instrument master...")
 
+        url = "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
 
-	def get_option_chain(self, symbol="NIFTY"):
-		"""
-		Returns option chain (LIVE) using Upstox API v2
-		"""
-		try:
-			# Dynamically fetch the correct instrument_key for the symbol
-			search_resp = self.instruments_api.search_instrument(query=symbol.upper(), exchanges="NSE")
-			instrument_key = None
-			if hasattr(search_resp, 'data') and search_resp.data:
-				# Find the first matching instrument_key
-				for item in search_resp.data:
-					if item.get('symbol') == symbol.upper():
-						instrument_key = item.get('instrument_key')
-						break
-				if not instrument_key:
-					instrument_key = search_resp.data[0].get('instrument_key')
-			if not instrument_key:
-				print(f"[ERROR] get_option_chain: Could not find instrument_key for {symbol}")
-				return [], None
-			response = self.options_api.get_option_contracts(instrument_key)
-			raw_chain = response.data if hasattr(response, 'data') else []
-			print(f"[DEBUG] get_option_chain: {len(raw_chain)} strikes fetched.")
-			# Transform to expected structure
-			chain = []
-			spot = None
-			for row in raw_chain:
-				strike = getattr(row, 'strike_price', None)
-				# Only set spot if it's a valid float
-				row_spot = getattr(row, 'underlying_spot_price', None)
-				if spot is None and isinstance(row_spot, (float, int)) and row_spot > 0:
-					spot = float(row_spot)
-				ce = getattr(row, 'call_options', None)
-				pe = getattr(row, 'put_options', None)
-				chain.append({
-					"strikePrice": strike,
-					"CE": {
-						"ltp": getattr(ce, 'last_traded_price', None) if ce else None,
-						"oi": getattr(ce, 'open_interest', None) if ce else None,
-						"iv": getattr(ce, 'implied_volatility', None) if ce else None,
-					},
-					"PE": {
-						"ltp": getattr(pe, 'last_traded_price', None) if pe else None,
-						"oi": getattr(pe, 'open_interest', None) if pe else None,
-						"iv": getattr(pe, 'implied_volatility', None) if pe else None,
-					}
-				})
-			# Fallback: If spot is still None, try to get from get_spot
-			if spot is None:
-				spot = self.get_spot(symbol)
-			return chain, spot
-		except Exception as e:
-			print(f"[ERROR] get_option_chain: {e}")
-			return [], None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, timeout=15)
 
+                if response.status_code != 200:
+                    raise Exception(f"HTTP {response.status_code}")
 
-	def place_order(self, symbol, side, qty, price=None):
-		try:
-			print(f"📤 ORDER -> {side} {symbol} QTY={qty} PRICE={price}")
-			# TODO: Implement real Upstox order placement using API v2
-			# See Upstox API docs for order parameters
-			# Example stub:
-			order_id = f"SIM-{symbol}-{side}-{qty}"
-			print(f"✅ Simulated Order ID: {order_id}")
-			return order_id
-		except Exception as e:
-			print("❌ Order failed:", e)
-			return None
+                if not response.content:
+                    raise Exception("Empty response")
 
+                # Decompress gzip
+                compressed = io.BytesIO(response.content)
+                with gzip.GzipFile(fileobj=compressed) as f:
+                    content = f.read().decode("utf-8")
 
-	def get_positions(self):
-		# TODO: Implement using self.client.get_positions() if available
-		return []
+                # Parse CSV into list of dicts
+                reader = csv.DictReader(io.StringIO(content))
+                data = [row for row in reader]
 
-	def logout(self):
-		print("👋 Logging out")
-# This file marks the broker module for Upstox integration.
+                if not data:
+                    raise Exception("Empty CSV after parsing")
+
+                # Save to local cache
+                with open(self.instrument_file, "w") as f:
+                    json.dump(data, f)
+
+                self.instrument_cache = data
+                logging.info(f"✅ Instruments loaded: {len(data)}")
+                return data
+
+            except Exception as e:
+                logging.warning(f"[Retry {attempt+1}] Instrument load failed: {e}")
+                time.sleep(1)
+
+        raise Exception("❌ Failed to load instrument master")
+
+    # ---------------------------------------------------
+    # GET SPOT PRICE
+    # ---------------------------------------------------
+    def get_spot(self, symbol="NIFTY", retries=3):
+        try:
+            instruments = self.load_instruments()
+
+            instrument_key = None
+            for item in instruments:
+                if (
+                    item.get("segment") == "NSE_INDEX"
+                    and symbol.upper() in item.get("name", "").upper()
+                ):
+                    instrument_key = item.get("instrument_key")
+                    break
+
+            if not instrument_key:
+                raise Exception(f"{symbol} index not found in instruments")
+
+            for attempt in range(retries):
+                try:
+                    response = self.safe_ltp([instrument_key])
+
+                    if response.data:
+                        ltp_obj = list(response.data.values())[0]
+                        price = float(ltp_obj.last_price)
+                        logging.info(f"📊 {symbol} Spot = {price}")
+                        return price
+
+                except Exception as e:
+                    logging.warning(f"[Retry {attempt+1}] get_spot failed: {e}")
+                    time.sleep(0.5)
+
+            return None
+
+        except Exception as e:
+            logging.error(f"❌ get_spot error: {e}")
+            return None
+
+    # ---------------------------------------------------
+    # GET NEAREST EXPIRY
+    # ---------------------------------------------------
+    def get_nearest_expiry(self, symbol="NIFTY"):
+        instruments = self.load_instruments()
+
+        expiries = sorted({
+            item.get("expiry")
+            for item in instruments
+            if (
+                item.get("segment") == "NSE_FO"
+                and symbol.upper() in item.get("name", "").upper()
+                and item.get("expiry")
+            )
+        })
+
+        return expiries[0] if expiries else None
+
+    # ---------------------------------------------------
+    # OPTION CHAIN (GROUPED)
+    # ---------------------------------------------------
+    def get_option_chain(self, symbol="NIFTY", range_size=1000):
+        try:
+            instruments = self.load_instruments()
+            spot = self.get_spot(symbol)
+
+            if not spot:
+                return [], None
+
+            expiry = self.get_nearest_expiry(symbol)
+            if not expiry:
+                logging.error(f"❌ No expiry found for {symbol}")
+                return [], None
+
+            logging.info(f"📅 Using expiry: {expiry}")
+
+            options = [
+                i for i in instruments
+                if (
+                    i.get("segment") == "NSE_FO"
+                    and symbol.upper() in i.get("name", "").upper()
+                    and i.get("expiry") == expiry
+                )
+            ]
+
+            if not options:
+                logging.error(f"❌ No options found for {symbol} expiry {expiry}")
+                return [], None
+
+            grouped = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
+
+            for opt in options:
+                # CSV uses "strike" not "strike_price" — handle both
+                strike = opt.get("strike") or opt.get("strike_price")
+                if not strike:
+                    continue
+
+                try:
+                    strike = float(strike)
+                except ValueError:
+                    continue
+
+                if abs(strike - spot) > range_size:
+                    continue
+
+                try:
+                    response = self.safe_ltp([opt["instrument_key"]])
+                    data = response.data
+                    ltp_obj = list(data.values())[0]
+
+                    entry = grouped[strike]
+                    entry["strikePrice"] = strike
+
+                    side = opt.get("instrument_type")  # CE or PE
+
+                    entry[side] = {
+                        "ltp": getattr(ltp_obj, "last_price", None),
+                        "instrument_key": opt["instrument_key"]
+                    }
+
+                    time.sleep(0.03)
+
+                except Exception:
+                    continue
+
+            chain = list(grouped.values())
+
+            logging.info(f"📊 Option chain built: {len(chain)} strikes")
+            return chain, spot
+
+        except Exception as e:
+            logging.error(f"❌ option chain error: {e}")
+            return [], None
+
+    # ---------------------------------------------------
+    # PLACE ORDER
+    # ---------------------------------------------------
+    def place_order(self, instrument_key, side, qty, price=None):
+        for attempt in range(3):
+            try:
+                order = {
+                    "quantity": qty,
+                    "product": "D",
+                    "validity": "DAY",
+                    "instrument_token": instrument_key,
+                    "order_type": "MARKET" if price is None else "LIMIT",
+                    "transaction_type": side.upper(),
+                    "price": price or 0,
+                    "tag": "algo_bot"
+                }
+
+                response = self.order_api.place_order(order)
+                logging.info(f"✅ Order placed: {response}")
+                return response
+
+            except Exception as e:
+                logging.warning(f"[Retry {attempt+1}] order failed: {e}")
+                time.sleep(1)
+
+        logging.error("❌ Order failed after 3 attempts")
+        return None
+
+    # ---------------------------------------------------
+    def get_positions(self):
+        return []
+
+    def logout(self):
+        logging.info("👋 Logout")
