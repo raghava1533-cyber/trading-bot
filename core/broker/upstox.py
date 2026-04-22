@@ -42,23 +42,31 @@ class Broker:
 		Returns spot price (LIVE) using Upstox API v2
 		"""
 		try:
-			# Use the correct Upstox API v2 method for LTP
-			# The symbol format is likely 'NSE_INDEX|NIFTY' or similar
-			instrument = f"NSE_INDEX|{symbol.upper()}"
-			response = self.market_api.ltp(symbol=instrument, api_version="v2")
-			ltp = None
-			# Try to extract LTP from response
-			if hasattr(response, 'data') and response.data:
-				print(f"[DEBUG] get_spot: response.data = {response.data}")
-				# Upstox LTP API returns a dict with instrument keys, values are MarketQuoteSymbolLtp objects
-				if isinstance(response.data, dict):
-					ltp_obj = list(response.data.values())[0]
-					ltp = getattr(ltp_obj, 'last_price', None)
-				elif isinstance(response.data, list):
-					ltp_obj = response.data[0]
-					ltp = getattr(ltp_obj, 'last_price', None)
-			print(f"[DEBUG] get_spot: {ltp}")
-			return float(ltp) if ltp is not None else None
+			# Try all possible instrument key formats for spot price
+			instruments = [
+				f"NSE_INDEX|{symbol.upper()}",
+				f"NSE_FO|{symbol.upper()}",
+				f"NSE_EQ|{symbol.upper()}"
+			]
+			for instrument in instruments:
+				print(f"[DEBUG] Trying instrument: {instrument}")
+				try:
+					response = self.market_api.ltp(symbol=instrument, api_version="v2")
+					if hasattr(response, 'data') and response.data:
+						print(f"[DEBUG] get_spot: response.data = {response.data}")
+						if isinstance(response.data, dict):
+							ltp_obj = list(response.data.values())[0]
+							ltp = getattr(ltp_obj, 'last_price', None)
+						elif isinstance(response.data, list):
+							ltp_obj = response.data[0]
+							ltp = getattr(ltp_obj, 'last_price', None)
+						print(f"[DEBUG] get_spot: {ltp}")
+						if ltp is not None:
+							return float(ltp)
+				except Exception as e:
+					print(f"[DEBUG] get_spot: instrument {instrument} failed: {e}")
+			print(f"[ERROR] get_spot: All instrument keys failed for {symbol}")
+			return None
 		except Exception as e:
 			print(f"[ERROR] get_spot: {e}")
 			return None
