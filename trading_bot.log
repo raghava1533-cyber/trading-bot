@@ -437,3 +437,77 @@
 2026-04-22 14:16:40,833 | INFO | MTM PnL: 0
 2026-04-22 14:16:40,833 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
 2026-04-22 14:16:40,837 | ERROR | Error in cycle
+2026-04-22 14:16:46,596 | INFO | Cycle start
+2026-04-22 14:16:46,603 | INFO | Regime: BULL
+2026-04-22 14:16:46,603 | INFO | No option chain
+2026-04-22 14:17:10,841 | INFO | Cycle start
+2026-04-22 14:17:10,841 | INFO | Regime: BULL
+2026-04-22 14:17:11,212 | INFO | Spot: None
+2026-04-22 14:17:11,212 | INFO | MTM PnL: 0
+2026-04-22 14:17:11,212 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:17:11,212 | ERROR | Error in cycle
+2026-04-22 14:17:16,618 | INFO | Cycle start
+2026-04-22 14:17:16,998 | INFO | Regime: BULL
+2026-04-22 14:17:16,998 | INFO | No option chain
+2026-04-22 14:17:41,215 | INFO | Cycle start
+2026-04-22 14:17:41,467 | INFO | Regime: BULL
+2026-04-22 14:17:41,892 | INFO | Spot: None
+2026-04-22 14:17:41,892 | INFO | MTM PnL: 0
+2026-04-22 14:17:41,892 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:17:41,892 | ERROR | Error in cycle
+2026-04-22 14:17:47,010 | INFO | Cycle start
+2026-04-22 14:17:47,014 | INFO | Regime: BULL
+2026-04-22 14:17:47,017 | INFO | No option chain
+2026-04-22 14:18:11,906 | INFO | Cycle start
+2026-04-22 14:18:11,919 | INFO | Regime: BULL
+2026-04-22 14:18:12,284 | INFO | Spot: None
+2026-04-22 14:18:12,284 | INFO | MTM PnL: 0
+2026-04-22 14:18:12,284 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:18:12,284 | ERROR | Error in cycle
+2026-04-22 14:18:17,018 | INFO | Cycle start
+2026-04-22 14:18:17,254 | INFO | Regime: BULL
+2026-04-22 14:18:17,254 | INFO | No option chain
+2026-04-22 14:18:42,299 | INFO | Cycle start
+2026-04-22 14:18:42,600 | INFO | Regime: BULL
+2026-04-22 14:18:43,000 | INFO | Spot: None
+2026-04-22 14:18:43,001 | INFO | MTM PnL: 0
+2026-04-22 14:18:43,001 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:18:43,001 | ERROR | Error in cycle
+2026-04-22 14:18:47,259 | INFO | Cycle start
+2026-04-22 14:18:47,270 | INFO | Regime: BULL
+2026-04-22 14:18:47,271 | INFO | No option chain
+2026-04-22 14:18:51,663 | INFO | Bot started
+2026-04-22 14:18:51,689 | INFO | Cycle start
+2026-04-22 14:18:52,356 | INFO | Regime: BULL
+2026-04-22 14:18:53,024 | INFO | Spot: None
+2026-04-22 14:18:53,025 | INFO | MTM PnL: 0
+2026-04-22 14:18:53,025 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:18:53,026 | ERROR | Error in cycle
+2026-04-22 14:18:57,008 | INFO | Bot started
+2026-04-22 14:18:57,044 | INFO | Cycle start
+2026-04-22 14:18:58,223 | INFO | Regime: BULL
+2026-04-22 14:18:58,965 | INFO | Spot: None
+2026-04-22 14:18:58,965 | INFO | MTM PnL: 0
+2026-04-22 14:18:58,965 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:18:58,965 | ERROR | Error in cycle
+2026-04-22 14:19:13,005 | INFO | Cycle start
+2026-04-22 14:19:13,018 | INFO | Regime: BULL
+2026-04-22 14:19:13,323 | INFO | Spot: None
+2026-04-22 14:19:13,326 | INFO | MTM PnL: 0
+2026-04-22 14:19:13,326 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:19:13,326 | ERROR | Error in cycle
+2026-04-22 14:19:17,279 | INFO | Cycle start
+2026-04-22 14:19:17,695 | INFO | Regime: BULL
+2026-04-22 14:19:17,695 | INFO | No option chain
+2026-04-22 14:19:23,047 | INFO | Cycle start
+2026-04-22 14:19:23,057 | INFO | Regime: BULL
+2026-04-22 14:19:23,398 | INFO | Spot: None
+2026-04-22 14:19:23,399 | INFO | MTM PnL: 0
+2026-04-22 14:19:23,400 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:19:23,400 | ERROR | Error in cycle
+2026-04-22 14:19:28,976 | INFO | Cycle start
+2026-04-22 14:19:28,991 | INFO | Regime: BULL
+2026-04-22 14:19:29,311 | INFO | Spot: None
+2026-04-22 14:19:29,311 | INFO | MTM PnL: 0
+2026-04-22 14:19:29,311 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:19:29,323 | ERROR | Error in cycle

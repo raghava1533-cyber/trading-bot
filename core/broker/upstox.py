@@ -49,6 +49,7 @@ class Broker:
 			ltp = None
 			# Try to extract LTP from response
 			if hasattr(response, 'data') and response.data:
+				print(f"[DEBUG] get_spot: response.data = {response.data}")
 				# Upstox LTP API returns a dict with instrument keys, values are MarketQuoteSymbolLtp objects
 				if isinstance(response.data, dict):
 					ltp_obj = list(response.data.values())[0]
