@@ -49,12 +49,13 @@ class Broker:
 			ltp = None
 			# Try to extract LTP from response
 			if hasattr(response, 'data') and response.data:
-				# If response.data is a list or dict
+				# Upstox LTP API returns a dict with instrument keys, values are MarketQuoteSymbolLtp objects
 				if isinstance(response.data, dict):
-					# Upstox LTP API returns a dict with instrument keys
-					ltp = list(response.data.values())[0].get('ltp')
+					ltp_obj = list(response.data.values())[0]
+					ltp = getattr(ltp_obj, 'last_price', None)
 				elif isinstance(response.data, list):
-					ltp = response.data[0].get('ltp')
+					ltp_obj = response.data[0]
+					ltp = getattr(ltp_obj, 'last_price', None)
 			print(f"[DEBUG] get_spot: {ltp}")
 			return float(ltp) if ltp is not None else None
 		except Exception as e:
