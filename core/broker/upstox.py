@@ -80,8 +80,10 @@ class Broker:
 			spot = None
 			for row in raw_chain:
 				strike = getattr(row, 'strike_price', None)
-				if spot is None:
-					spot = getattr(row, 'underlying_spot_price', None)
+				# Only set spot if it's a valid float
+				row_spot = getattr(row, 'underlying_spot_price', None)
+				if spot is None and isinstance(row_spot, (float, int)) and row_spot > 0:
+					spot = float(row_spot)
 				ce = getattr(row, 'call_options', None)
 				pe = getattr(row, 'put_options', None)
 				chain.append({
@@ -97,6 +99,9 @@ class Broker:
 						"iv": getattr(pe, 'implied_volatility', None) if pe else None,
 					}
 				})
+			# Fallback: If spot is still None, try to get from get_spot
+			if spot is None:
+				spot = self.get_spot(symbol)
 			return chain, spot
 		except Exception as e:
 			print(f"[ERROR] get_option_chain: {e}")
