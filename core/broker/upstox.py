@@ -42,12 +42,21 @@ class Broker:
 		Returns spot price (LIVE) using Upstox API v2
 		"""
 		try:
-			# Example for NSE_INDEX. Adjust as needed for your use case.
-			response = self.market_api.get_market_quote_last_traded_price(
-				exchange='NSE_INDEX', symbol=symbol)
-			ltp = response.data.last_price
+			# Use the correct Upstox API v2 method for LTP
+			# The symbol format is likely 'NSE_INDEX|NIFTY' or similar
+			instrument = f"NSE_INDEX|{symbol.upper()}"
+			response = self.market_api.ltp(symbol=instrument, api_version="v2")
+			ltp = None
+			# Try to extract LTP from response
+			if hasattr(response, 'data') and response.data:
+				# If response.data is a list or dict
+				if isinstance(response.data, dict):
+					# Upstox LTP API returns a dict with instrument keys
+					ltp = list(response.data.values())[0].get('ltp')
+				elif isinstance(response.data, list):
+					ltp = response.data[0].get('ltp')
 			print(f"[DEBUG] get_spot: {ltp}")
-			return float(ltp)
+			return float(ltp) if ltp is not None else None
 		except Exception as e:
 			print(f"[ERROR] get_spot: {e}")
 			return None

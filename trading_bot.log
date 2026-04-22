@@ -354,3 +354,23 @@
 2026-04-22 14:10:23,730 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
 2026-04-22 14:10:23,732 | ERROR | Error in cycle
 2026-04-22 14:10:38,259 | INFO | Bot stopped
+2026-04-22 14:10:43,738 | INFO | Cycle start
+2026-04-22 14:10:43,746 | INFO | Regime: BULL
+2026-04-22 14:10:43,746 | INFO | No option chain
+2026-04-22 14:11:13,762 | INFO | Cycle start
+2026-04-22 14:11:14,546 | INFO | Regime: BULL
+2026-04-22 14:11:14,547 | INFO | No option chain
+2026-04-22 14:11:26,059 | INFO | Bot started
+2026-04-22 14:11:26,080 | INFO | Cycle start
+2026-04-22 14:11:28,006 | INFO | Regime: BULL
+2026-04-22 14:11:28,775 | INFO | Spot: None
+2026-04-22 14:11:28,775 | INFO | MTM PnL: 0
+2026-04-22 14:11:28,775 | INFO | PnL Summary: {'realized': 0, 'unrealized': 0, 'total': 0, 'open_positions': 0}
+2026-04-22 14:11:28,775 | ERROR | Error in cycle
+2026-04-22 14:11:33,381 | INFO | Bot stopped
+2026-04-22 14:11:44,559 | INFO | Cycle start
+2026-04-22 14:11:44,570 | INFO | Regime: BULL
+2026-04-22 14:11:44,570 | INFO | No option chain
+2026-04-22 14:12:14,585 | INFO | Cycle start
+2026-04-22 14:12:14,836 | INFO | Regime: BULL
+2026-04-22 14:12:14,836 | INFO | No option chain
