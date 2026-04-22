@@ -56,12 +56,13 @@ class Broker:
 		Returns option chain (LIVE) using Upstox API v2
 		"""
 		try:
-			# Exchange for NIFTY options is usually 'NSE_INDEX' or 'NSE_FO'
-			response = self.options_api.get_option_chain(
-				exchange='NSE_FO', symbol=symbol)
-			chain = response.data.option_chain
+			# You need the instrument_key for the underlying symbol (e.g., NIFTY)
+			# This is usually in the format 'NSE_INDEX|NIFTY' or 'NSE_FO|NIFTY'
+			instrument_key = f"NSE_INDEX|{symbol.upper()}"
+			response = self.options_api.get_option_contracts(instrument_key)
+			chain = response.data if hasattr(response, 'data') else []
 			print(f"[DEBUG] get_option_chain: {len(chain)} strikes fetched.")
-			return chain, response.data
+			return chain, None
 		except Exception as e:
 			print(f"[ERROR] get_option_chain: {e}")
 			return [], None
