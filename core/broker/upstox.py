@@ -59,7 +59,7 @@ class Broker:
 		"""
 		try:
 			# Dynamically fetch the correct instrument_key for the symbol
-			search_resp = self.instruments_api.search_instrument(query=symbol.upper(), exchanges="NSE", segments="NSE_FO")
+			search_resp = self.instruments_api.search_instrument(query=symbol.upper(), exchanges="NSE")
 			instrument_key = None
 			if hasattr(search_resp, 'data') and search_resp.data:
 				# Find the first matching instrument_key
