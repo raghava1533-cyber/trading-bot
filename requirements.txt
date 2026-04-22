@@ -2,3 +2,4 @@ upstox
 yfinance
 joblib
 xgboost
+python-dotenv

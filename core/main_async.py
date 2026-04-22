@@ -19,7 +19,7 @@ from execution.paper_engine import PaperEngine
 from data.candles import fetch_candles
 from ml.regime_xgb import load_model, predict_regime
 from greeks.engine import greeks_fd
-from broker.kotak import Broker
+from broker.upstox import Broker
 from infra.redis_bus import set_data
 
 # =========================================

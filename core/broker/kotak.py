@@ -77,23 +77,18 @@ class Broker:
             return order_id
 
             # 🔴 TODO: REAL ORDER
-            """
-            url = f"{self.base_url}/orders/place"
-
-            headers = {"Authorization": self.session_token}
-
-            payload = {
-                "symbol": symbol,
-                "side": side,
-                "qty": qty,
-                "price": price,
-                "type": "MARKET"
-            """
-
-            r = requests.post(url, headers=headers, json=payload)
-            data = r.json()
-
-            return data.get("orderId")
+            # url = f"{self.base_url}/orders/place"
+            # headers = {"Authorization": self.session_token}
+            # payload = {
+            #     "symbol": symbol,
+            #     "side": side,
+            #     "qty": qty,
+            #     "price": price,
+            #     "type": "MARKET"
+            # }
+            # r = requests.post(url, headers=headers, json=payload)
+            # data = r.json()
+            # return data.get("orderId")
             """
 
         except Exception as e:
