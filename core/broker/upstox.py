@@ -19,6 +19,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 class Broker:
+    # Hardcoded Upstox index instrument keys (not in CSV)
+    INDEX_KEYS = {
+        "NIFTY":      "NSE_INDEX|Nifty 50",
+        "BANKNIFTY":  "NSE_INDEX|Nifty Bank",
+        "FINNIFTY":   "NSE_INDEX|Nifty Fin Service",
+        "MIDCPNIFTY": "NSE_INDEX|Nifty MidCap Select",
+        "SENSEX":     "BSE_INDEX|SENSEX",
+    }
+
     def __init__(self):
         logging.info("✅ Upstox Broker initializing...")
 
@@ -41,8 +50,12 @@ class Broker:
     # ---------------------------------------------------
     def safe_ltp(self, keys):
         try:
+            if isinstance(keys, list):
+                keys = ",".join(keys)
             return self.market_api.ltp(symbol=keys, api_version="v2")
         except TypeError:
+            if isinstance(keys, list):
+                keys = ",".join(keys)
             return self.market_api.ltp(symbol=keys)
 
     # ---------------------------------------------------
@@ -110,25 +123,15 @@ class Broker:
     # ---------------------------------------------------
     def get_spot(self, symbol="NIFTY", retries=3):
         try:
-            instruments = self.load_instruments()
-
-            instrument_key = None
-            for item in instruments:
-                if (
-                    item.get("segment") == "NSE_INDEX"
-                    and symbol.upper() in item.get("name", "").upper()
-                ):
-                    instrument_key = item.get("instrument_key")
-                    break
-
+            instrument_key = self.INDEX_KEYS.get(symbol.upper())
             if not instrument_key:
-                raise Exception(f"{symbol} index not found in instruments")
+                raise Exception(f"No index key configured for symbol: {symbol}")
 
             for attempt in range(retries):
                 try:
                     response = self.safe_ltp([instrument_key])
 
-                    if response.data:
+                    if response and response.data:
                         ltp_obj = list(response.data.values())[0]
                         price = float(ltp_obj.last_price)
                         logging.info(f"📊 {symbol} Spot = {price}")
@@ -138,6 +141,7 @@ class Broker:
                     logging.warning(f"[Retry {attempt+1}] get_spot failed: {e}")
                     time.sleep(0.5)
 
+            logging.error(f"❌ get_spot: all retries exhausted for {symbol}")
             return None
 
         except Exception as e:
@@ -148,19 +152,30 @@ class Broker:
     # GET NEAREST EXPIRY
     # ---------------------------------------------------
     def get_nearest_expiry(self, symbol="NIFTY"):
-        instruments = self.load_instruments()
+        try:
+            instruments = self.load_instruments()
 
-        expiries = sorted({
-            item.get("expiry")
-            for item in instruments
-            if (
-                item.get("segment") == "NSE_FO"
-                and symbol.upper() in item.get("name", "").upper()
-                and item.get("expiry")
-            )
-        })
+            expiries = sorted({
+                item.get("expiry")
+                for item in instruments
+                if (
+                    item.get("exchange") == "NSE_FO"
+                    and item.get("name", "").upper() == symbol.upper()
+                    and item.get("instrument_type") == "OPTIDX"
+                    and item.get("expiry")
+                )
+            })
 
-        return expiries[0] if expiries else None
+            if not expiries:
+                logging.error(f"❌ No expiries found for {symbol}")
+                return None
+
+            logging.info(f"📅 Nearest expiry for {symbol}: {expiries[0]}")
+            return expiries[0]
+
+        except Exception as e:
+            logging.error(f"❌ get_nearest_expiry error: {e}")
+            return None
 
     # ---------------------------------------------------
     # OPTION CHAIN (GROUPED)
@@ -171,6 +186,7 @@ class Broker:
             spot = self.get_spot(symbol)
 
             if not spot:
+                logging.error(f"❌ Could not fetch spot for {symbol}")
                 return [], None
 
             expiry = self.get_nearest_expiry(symbol)
@@ -178,13 +194,15 @@ class Broker:
                 logging.error(f"❌ No expiry found for {symbol}")
                 return [], None
 
-            logging.info(f"📅 Using expiry: {expiry}")
+            logging.info(f"📅 Building option chain for {symbol} | Expiry: {expiry} | Spot: {spot}")
 
+            # Filter to relevant options for this symbol and expiry
             options = [
                 i for i in instruments
                 if (
-                    i.get("segment") == "NSE_FO"
-                    and symbol.upper() in i.get("name", "").upper()
+                    i.get("exchange") == "NSE_FO"
+                    and i.get("name", "").upper() == symbol.upper()
+                    and i.get("instrument_type") == "OPTIDX"
                     and i.get("expiry") == expiry
                 )
             ]
@@ -196,28 +214,33 @@ class Broker:
             grouped = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
 
             for opt in options:
-                # CSV uses "strike" not "strike_price" — handle both
-                strike = opt.get("strike") or opt.get("strike_price")
-                if not strike:
+                strike_raw = opt.get("strike")
+                if not strike_raw:
                     continue
 
                 try:
-                    strike = float(strike)
+                    strike = float(strike_raw)
                 except ValueError:
                     continue
 
+                # Skip strikes too far from spot
                 if abs(strike - spot) > range_size:
                     continue
 
                 try:
                     response = self.safe_ltp([opt["instrument_key"]])
-                    data = response.data
-                    ltp_obj = list(data.values())[0]
+                    if not response or not response.data:
+                        continue
+
+                    ltp_obj = list(response.data.values())[0]
 
                     entry = grouped[strike]
                     entry["strikePrice"] = strike
 
-                    side = opt.get("instrument_type")  # CE or PE
+                    # ✅ Fixed: use option_type (CE/PE), not instrument_type (OPTIDX)
+                    side = opt.get("option_type")
+                    if side not in ("CE", "PE"):
+                        continue
 
                     entry[side] = {
                         "ltp": getattr(ltp_obj, "last_price", None),
@@ -226,16 +249,17 @@ class Broker:
 
                     time.sleep(0.03)
 
-                except Exception:
+                except Exception as e:
+                    logging.warning(f"⚠️ Skipping strike {strike}: {e}")
                     continue
 
-            chain = list(grouped.values())
+            chain = sorted(grouped.values(), key=lambda x: x["strikePrice"])
 
-            logging.info(f"📊 Option chain built: {len(chain)} strikes")
+            logging.info(f"📊 Option chain built: {len(chain)} strikes for {symbol}")
             return chain, spot
 
         except Exception as e:
-            logging.error(f"❌ option chain error: {e}")
+            logging.error(f"❌ get_option_chain error: {e}")
             return [], None
 
     # ---------------------------------------------------
@@ -260,15 +284,20 @@ class Broker:
                 return response
 
             except Exception as e:
-                logging.warning(f"[Retry {attempt+1}] order failed: {e}")
+                logging.warning(f"[Retry {attempt+1}] Order failed: {e}")
                 time.sleep(1)
 
         logging.error("❌ Order failed after 3 attempts")
         return None
 
     # ---------------------------------------------------
+    # GET POSITIONS
+    # ---------------------------------------------------
     def get_positions(self):
         return []
 
+    # ---------------------------------------------------
+    # LOGOUT
+    # ---------------------------------------------------
     def logout(self):
         logging.info("👋 Logout")
