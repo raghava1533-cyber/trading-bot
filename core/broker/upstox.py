@@ -114,7 +114,7 @@ class Broker:
                         return price
                 except Exception as e:
                     logging.warning(f"[Retry {attempt+1}] get_spot failed: {e}")
-                    time.sleep(0.5)
+                    time.sleep(2)
             logging.error(f"❌ get_spot: all retries exhausted for {symbol}")
             return None
         except Exception as e:
@@ -231,7 +231,7 @@ class Broker:
                         "oi":             oi,
                         "iv":             iv,
                     }
-                    time.sleep(0.03)
+                    time.sleep(0.1)
 
                 except Exception as e:
                     logging.warning(f"⚠️ Skipping strike {strike}: {e}")
