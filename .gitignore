@@ -5,6 +5,8 @@ __pycache__/
 *.pyd
 .env
 .env.*
+.env
+**/.env
 .idea/
 .vscode/
 .DS_Store

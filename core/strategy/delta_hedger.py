@@ -1,10 +1,12 @@
 # strategy/delta_hedger.py
+
 def compute_portfolio_delta(positions, greeks_map):
     total_delta = 0
 
     for pos in positions:
-        sym = pos["symbol"]
-        qty = pos["qty"]
+        # Fixed: was pos["symbol"], paper_engine stores pos["strategy"]
+        sym = pos["strategy"]
+        qty = pos.get("qty", 1)
 
         delta = greeks_map.get(sym, {}).get("delta", 0)
 

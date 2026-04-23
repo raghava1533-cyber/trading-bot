@@ -46,13 +46,18 @@ def load_model():
     return train(fetch_candles())
 
 
+# In regime_xgb.py, replace predict_regime():
 def predict_regime(model, df):
     df = compute_features(df)
-
     if df.empty:
         return "SIDE"
 
     X = df[["ret", "ema", "vol"]].iloc[[-1]]
     pred = model.predict(X)[0]
-    # Map back to string label
+    vol = X["vol"].values[0]
+
+    # Low volatility = sideways market
+    if vol < 0.003:
+        return "SIDE"
+
     return "BULL" if pred == 1 else "BEAR"
