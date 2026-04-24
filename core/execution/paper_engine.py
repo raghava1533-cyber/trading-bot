@@ -55,13 +55,26 @@ class PaperEngine:
         }
 
     # =========================================
-    # GET MARGIN INFO (from latest open position)
+    # GET MARGIN INFO (aggregated across all open positions)
     # =========================================
     def get_margin_info(self):
-        for pos in reversed(self.positions):
-            if pos["open"] and pos.get("margin_info"):
-                return pos["margin_info"]
-        return None
+        open_margins = [
+            pos["margin_info"] for pos in self.positions
+            if pos["open"] and pos.get("margin_info")
+        ]
+        if not open_margins:
+            return None
+        if len(open_margins) == 1:
+            return open_margins[0]
+        # Aggregate: sum credits and profits; take max of max_loss for margin
+        return {
+            "credit_per_share": round(sum(m.get("credit_per_share", 0) for m in open_margins), 2),
+            "net_credit":       round(sum(m["net_credit"]       for m in open_margins), 2),
+            "max_profit":       round(sum(m["max_profit"]       for m in open_margins), 2),
+            "max_loss":         round(max(m["max_loss"]         for m in open_margins), 2),
+            "margin_required":  round(max(m["margin_required"]  for m in open_margins), 2),
+            "peak_margin_est":  round(sum(m.get("peak_margin_est", m["margin_required"]) for m in open_margins), 2),
+        }
 
     # =========================================
     # CLOSE ALL OPEN POSITIONS

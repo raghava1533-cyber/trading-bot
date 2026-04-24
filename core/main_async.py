@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+from datetime import date
 import traceback
 import logging
 import sys
@@ -69,91 +70,57 @@ def log(msg, level=logging.INFO):
     logging.log(level, msg)
 
 # =========================================
-# STARTUP: ask user which index to trade
+# STARTUP: always auto-scan all indices
 # =========================================
-def ask_index_selection():
-    """
-    Interactive prompt at startup.
-    Returns list of selected index keys e.g. ["NIFTY"] or ["NIFTY","BANKNIFTY","SENSEX"]
-    """
-    print("\n" + "═" * 60)
-    print("       NIFTY ALGO BOT — Index Selection")
-    print("═" * 60)
-    print("  1)  NIFTY 50        (Lot: 75)")
-    print("  2)  BANK NIFTY      (Lot: 30)")
-    print("  3)  SENSEX          (Lot: 10)")
-    print("  4)  AUTO — scan all and pick best opportunity")
-    print("═" * 60)
-
-    while True:
-        try:
-            choice = input("  Enter choice (1/2/3/4): ").strip()
-            if choice == "1":
-                return ["NIFTY"]
-            elif choice == "2":
-                return ["BANKNIFTY"]
-            elif choice == "3":
-                return ["SENSEX"]
-            elif choice == "4":
-                return list(INDEX_CONFIG.keys())   # all three
-            else:
-                print("  ❌ Invalid choice. Enter 1, 2, 3, or 4.")
-        except (KeyboardInterrupt, EOFError):
-            print("\nBot cancelled.")
-            sys.exit(0)
+# No manual selection — the bot always scans NIFTY, BANKNIFTY, and SENSEX
+# at startup and picks the best opportunity automatically.
 
 
 def pick_best_index(broker, model, indices):
     """
-    Called when user picks option 4.
-    Scores each index by: regime confidence + IV + OI liquidity.
-    Returns the single best index key.
+    Scans all indices, scores each by regime + OI liquidity, returns best key.
+    Always called automatically at startup — no user input required.
     """
-    print("\n  🔍 Scanning all indices for best opportunity...\n")
+    log("🔍 Scanning all indices for best opportunity...")
 
     scores = {}
 
     for idx in indices:
         try:
-            cfg  = INDEX_CONFIG[idx]
-
-            # Fetch candles for this index
-            from data.candles import fetch_candles
+            cfg     = INDEX_CONFIG[idx]
             candles = fetch_candles(ticker=cfg["yf_ticker"])
             if candles is None or candles.empty:
-                print(f"  ⚠️  {cfg['label']}: no candle data, skipping")
+                log(f"  ⚠️  {cfg['label']}: no candle data, skipping", logging.WARNING)
                 continue
 
             regime = predict_regime(model, candles)
 
             chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"])
             if not chain or not spot:
-                print(f"  ⚠️  {cfg['label']}: no option chain, skipping")
+                log(f"  ⚠️  {cfg['label']}: no option chain, skipping", logging.WARNING)
                 continue
 
-            # Score = average total OI across ATM ±3 strikes (liquidity proxy)
-            atm       = min(chain, key=lambda x: abs(x["strikePrice"] - spot))
-            atm_price = atm["strikePrice"]
+            # Score = average total OI across ATM ±300pts (liquidity proxy)
+            atm_price = min(chain, key=lambda x: abs(x["strikePrice"] - spot))["strikePrice"]
             nearby    = [r for r in chain if abs(r["strikePrice"] - atm_price) <= 300]
             avg_oi    = sum(
                 (r.get("CE", {}).get("oi", 50000) + r.get("PE", {}).get("oi", 50000))
                 for r in nearby
             ) / max(len(nearby), 1)
 
-            # Regime score: SIDE > BULL/BEAR for premium selling
+            # Regime score: SIDE preferred for premium selling strategies
             regime_score = {"SIDE": 3, "BULL": 2, "BEAR": 2}.get(regime, 1)
-
-            total_score = regime_score * (avg_oi / 100000)
+            total_score  = regime_score * (avg_oi / 100000)
 
             scores[idx] = {
-                "score":   total_score,
-                "regime":  regime,
-                "spot":    spot,
-                "avg_oi":  avg_oi,
-                "label":   cfg["label"],
+                "score":  total_score,
+                "regime": regime,
+                "spot":   spot,
+                "avg_oi": avg_oi,
+                "label":  cfg["label"],
             }
 
-            print(
+            log(
                 f"  ✅  {cfg['label']:<14}  "
                 f"Spot: {spot:>10,.2f}  "
                 f"Regime: {regime:<5}  "
@@ -162,14 +129,14 @@ def pick_best_index(broker, model, indices):
             )
 
         except Exception as e:
-            print(f"  ❌  {idx}: error — {e}")
+            log(f"  ❌  {idx}: error during scan — {e}", logging.ERROR)
 
     if not scores:
-        print("\n  ⚠️  Could not score any index. Defaulting to NIFTY.")
+        log("⚠️  Could not score any index — defaulting to NIFTY", logging.WARNING)
         return "NIFTY"
 
     best = max(scores, key=lambda x: scores[x]["score"])
-    print(f"\n  🏆 Best index: {scores[best]['label']}  (score {scores[best]['score']:.2f})\n")
+    log(f"🏆 Best index: {scores[best]['label']}  (score {scores[best]['score']:.2f})")
     return best
 
 
@@ -285,9 +252,16 @@ def render_dashboard(active_index, spot, regime, pnl, greeks, positions, margin_
     lines.append(sep)
 
     if margin_info:
+        peak = margin_info.get("peak_margin_est", margin_info["margin_required"])
         lines.append(
-            f"  {BOLD}MARGIN REQ{RESET}  ₹{margin_info['margin_required']:>10,.2f}"
-            f"   {BOLD}NET CREDIT{RESET}  ₹{margin_info['net_credit']:>+6,.2f}/lot"
+            f"  {BOLD}SPREAD MARGIN{RESET}  ₹{margin_info['margin_required']:>10,.2f}"
+            f"  {YELLOW}(basket order){RESET}"
+            f"   {RED}{BOLD}PEAK MARGIN{RESET}  ₹{peak:>10,.2f}"
+            f"  {YELLOW}(sequential legs){RESET}"
+        )
+        lines.append(
+            f"  {BOLD}NET CREDIT{RESET}  ₹{margin_info['net_credit']:>+8,.2f}"
+            f"  ({margin_info['credit_per_share']:+.2f}/share)"
             f"   {GREEN}{BOLD}MAX PROFIT{RESET}  ₹{margin_info['max_profit']:>8,.2f}{RESET}"
             f"   {RED}{BOLD}MAX LOSS{RESET}  ₹{margin_info['max_loss']:>8,.2f}{RESET}"
         )
@@ -352,7 +326,10 @@ async def execute_trade(engine, idx, strategy_name, legs, chain):
 
         for leg in legs:
             side, strike, opt_type, symbol, entry_ltp, margin = leg
-            ltp = entry_ltp or get_ltp(chain, strike, opt_type)
+            # BUG FIX: entry_ltp=0 is falsy, so `entry_ltp or get_ltp(...)` would
+            # incorrectly discard a valid 0-valued LTP and fall through to get_ltp().
+            # Use explicit None check instead.
+            ltp = entry_ltp if entry_ltp is not None else get_ltp(chain, strike, opt_type)
             if ltp is None:
                 log(f"Missing LTP for {strike} {opt_type}", logging.ERROR)
                 return
@@ -431,20 +408,42 @@ async def run_cycle(broker, model, engine, idx):
         if not can_trade(idx):
             return
 
+        # ── Compute T (time to expiry in years) from the real expiry date ──
+        # Using T=0.1 (default) is wrong for near-expiry options — it skews
+        # delta calculations far OTM and causes select_strikes to return [].
+        expiry_str = broker.get_nearest_expiry(idx)   # e.g. "2026-04-28"
+        if expiry_str:
+            try:
+                expiry_date = datetime.datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                days_left   = (expiry_date - date.today()).days
+                T           = max(days_left / 365, 1 / 365)   # floor at 1 day
+            except Exception:
+                T = 0.1   # fallback
+        else:
+            T = 0.1
+
+        log(f"[{idx}] 📅 Expiry: {expiry_str}  T={T:.4f} yrs  Regime: {regime}")
+
         if regime == "SIDE":
-            legs = select_strikes(chain, spot, "IRON_CONDOR", target_delta=TARGET_DELTA, lot_size=lot_size)
+            legs = select_strikes(chain, spot, "IRON_CONDOR", T=T, target_delta=TARGET_DELTA, lot_size=lot_size)
             if legs:
                 await execute_trade(engine, idx, "IRON_CONDOR", legs, chain)
+            else:
+                log(f"[{idx}] ⚠️  IRON_CONDOR: select_strikes returned no legs", logging.WARNING)
 
         elif regime == "BULL":
-            legs = select_strikes(chain, spot, "BULL_PUT", target_delta=TARGET_DELTA, lot_size=lot_size)
+            legs = select_strikes(chain, spot, "BULL_PUT", T=T, target_delta=TARGET_DELTA, lot_size=lot_size)
             if legs:
                 await execute_trade(engine, idx, "BULL_PUT", legs, chain)
+            else:
+                log(f"[{idx}] ⚠️  BULL_PUT: select_strikes returned no legs", logging.WARNING)
 
         elif regime == "BEAR":
-            legs = select_strikes(chain, spot, "BEAR_CALL", target_delta=TARGET_DELTA, lot_size=lot_size)
+            legs = select_strikes(chain, spot, "BEAR_CALL", T=T, target_delta=TARGET_DELTA, lot_size=lot_size)
             if legs:
                 await execute_trade(engine, idx, "BEAR_CALL", legs, chain)
+            else:
+                log(f"[{idx}] ⚠️  BEAR_CALL: select_strikes returned no legs", logging.WARNING)
 
     except Exception:
         log(f"[{idx}] Error in cycle", logging.ERROR)
@@ -460,21 +459,15 @@ async def main():
     broker = Broker()
     model  = load_model()
 
-    # ── Ask user which index ──
-    selected_indices = ask_index_selection()
+    # ── Always scan all indices and pick the best one automatically ──
+    log("🔍 Scanning all indices to pick best opportunity...")
+    active_index = pick_best_index(broker, model, list(INDEX_CONFIG.keys()))
 
-    # ── If AUTO (all), pick best one now ──
-    if len(selected_indices) > 1:
-        best = pick_best_index(broker, model, selected_indices)
-        input(f"\n  Press Enter to start trading {INDEX_CONFIG[best]['label']}...")
-        selected_indices = [best]
+    cfg = INDEX_CONFIG[active_index]
 
-    active_index = selected_indices[0]
-    cfg          = INDEX_CONFIG[active_index]
-
-    print(f"\n  ✅ Trading: {cfg['label']}  |  Lot size: {cfg['lot_size']}")
-    print(f"  SL: ₹{STOP_LOSS:,}  |  Target: ₹{TARGET:,}  |  Delta: {TARGET_DELTA}")
-    input("  Press Enter to start bot...\n")
+    log(f"🏆 Selected: {cfg['label']}  |  Lot size: {cfg['lot_size']}")
+    log(f"   SL: ₹{STOP_LOSS:,}  |  Target: ₹{TARGET:,}  |  Delta: {TARGET_DELTA}")
+    log("▶  Bot starting — no manual confirmation required")
 
     engine = PaperEngine()
 

@@ -56,8 +56,11 @@ def predict_regime(model, df):
     pred = model.predict(X)[0]
     vol = X["vol"].values[0]
 
-    # Low volatility = sideways market
-    if vol < 0.003:
+    # Low volatility = sideways market.
+    # vol is std of 15-min log returns; 0.003 ≈ 0.3%/bar which is far too tight
+    # and causes almost every session to be classified as SIDE.
+    # 0.006 ≈ ~10% annualised vol — a reasonable sideways threshold for NIFTY.
+    if vol < 0.006:
         return "SIDE"
 
     return "BULL" if pred == 1 else "BEAR"
