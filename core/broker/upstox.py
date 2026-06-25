@@ -1,274 +1,314 @@
-import os
-import gzip
-import csv
-import io
-import time
-import json
-import logging
-import requests
+﻿"""
+broker/upstox.py  —  Upstox API wrapper
+Provides: get_spot, get_nearest_expiry, get_option_chain, get_candles, place_order
+"""
+import csv, gzip, io, json, logging, os, time
 from collections import defaultdict
-from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
+import requests
+from dotenv import load_dotenv
 from upstox_client import Configuration, ApiClient
 from upstox_client.api.market_quote_api import MarketQuoteApi
 from upstox_client.api.order_api import OrderApi
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+INDEX_KEYS = {
+    "NIFTY":      "NSE_INDEX|Nifty 50",
+    "BANKNIFTY":  "NSE_INDEX|Nifty Bank",
+    "FINNIFTY":   "NSE_INDEX|Nifty Fin Service",
+    "MIDCPNIFTY": "NSE_INDEX|Nifty MidCap Select",
+    "SENSEX":     "BSE_INDEX|SENSEX",
+}
 
 
 class Broker:
-    INDEX_KEYS = {
-        "NIFTY":      "NSE_INDEX|Nifty 50",
-        "BANKNIFTY":  "NSE_INDEX|Nifty Bank",
-        "FINNIFTY":   "NSE_INDEX|Nifty Fin Service",
-        "MIDCPNIFTY": "NSE_INDEX|Nifty MidCap Select",
-        "SENSEX":     "BSE_INDEX|SENSEX",
-    }
-
     def __init__(self):
-        logging.info("✅ Upstox Broker initializing...")
+        log.info("Upstox Broker initializing...")
         self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN")
         if not self.access_token:
-            raise Exception("❌ Missing UPSTOX_ACCESS_TOKEN")
+            raise RuntimeError("Missing UPSTOX_ACCESS_TOKEN in .env")
 
-        config = Configuration()
-        config.access_token = self.access_token
-        self.api_client = ApiClient(configuration=config)
-        self.market_api = MarketQuoteApi(self.api_client)
-        self.order_api = OrderApi(self.api_client)
-        self.instrument_cache = None
-        self.instrument_file = "instruments_cache.json"
+        cfg = Configuration()
+        cfg.access_token = self.access_token
+        self.api_client  = ApiClient(configuration=cfg)
+        self.market_api  = MarketQuoteApi(self.api_client)
+        self.order_api   = OrderApi(self.api_client)
 
-    def safe_ltp(self, keys):
+        self._instrument_cache     = None
+        self._instrument_cache_ts  = 0.0
+        self.instrument_file       = os.getenv("INSTRUMENT_CACHE_FILE", "instruments_cache.json")
+        self._cache_ttl            = float(os.getenv("INSTRUMENT_CACHE_TTL_HOURS", "12")) * 3600
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+    def _safe_ltp(self, keys: list[str]):
+        k = ",".join(keys)
         try:
-            if isinstance(keys, list):
-                keys = ",".join(keys)
-            return self.market_api.ltp(symbol=keys, api_version="v2")
+            return self.market_api.ltp(symbol=k, api_version="v2")
         except TypeError:
-            if isinstance(keys, list):
-                keys = ",".join(keys)
-            return self.market_api.ltp(symbol=keys)
+            return self.market_api.ltp(symbol=k)
 
-    def safe_quote(self, keys):
+    def _safe_quote(self, keys: list[str]):
         try:
-            if isinstance(keys, list):
-                keys = ",".join(keys)
-            return self.market_api.get_full_market_quote(symbol=keys, api_version="v2")
+            k = ",".join(keys)
+            return self.market_api.get_full_market_quote(symbol=k, api_version="v2")
         except Exception:
             return None
 
-    def load_instruments(self):
-        if self.instrument_cache:
-            return self.instrument_cache
+    # ── Instrument master ─────────────────────────────────────────────────────
+    def load_instruments(self) -> list[dict]:
+        now = time.time()
+        if self._instrument_cache and (now - self._instrument_cache_ts) < self._cache_ttl:
+            return self._instrument_cache
 
         if os.path.exists(self.instrument_file):
-            try:
-                with open(self.instrument_file, "r") as f:
-                    data = json.load(f)
-                    self.instrument_cache = data
-                    logging.info(f"✅ Loaded instruments from file ({len(data)})")
+            age = now - os.path.getmtime(self.instrument_file)
+            if age < self._cache_ttl:
+                try:
+                    with open(self.instrument_file, "r") as f:
+                        data = json.load(f)
+                    self._instrument_cache    = data
+                    self._instrument_cache_ts = now
+                    log.info(f"Instruments loaded from cache ({len(data)} rows)")
                     return data
-            except Exception:
-                logging.warning("⚠️ Failed to read local cache, re-downloading...")
+                except Exception:
+                    log.warning("Instrument cache corrupt — re-downloading")
 
-        logging.info("📥 Downloading instrument master...")
-        url = "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
+        url = os.getenv(
+            "INSTRUMENT_MASTER_URL",
+            "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz",
+        )
+        log.info("Downloading instrument master...")
         for attempt in range(3):
             try:
-                response = requests.get(url, timeout=15)
-                if response.status_code != 200:
-                    raise Exception(f"HTTP {response.status_code}")
-                if not response.content:
-                    raise Exception("Empty response")
-                compressed = io.BytesIO(response.content)
-                with gzip.GzipFile(fileobj=compressed) as f:
-                    content = f.read().decode("utf-8")
-                reader = csv.DictReader(io.StringIO(content))
-                data = [row for row in reader]
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
+                    content = gz.read().decode("utf-8")
+                data = list(csv.DictReader(io.StringIO(content)))
                 if not data:
-                    raise Exception("Empty CSV after parsing")
+                    raise ValueError("Empty CSV")
                 with open(self.instrument_file, "w") as f:
                     json.dump(data, f)
-                self.instrument_cache = data
-                logging.info(f"✅ Instruments loaded: {len(data)}")
+                self._instrument_cache    = data
+                self._instrument_cache_ts = now
+                log.info(f"Instruments downloaded: {len(data)} rows")
                 return data
-            except Exception as e:
-                logging.warning(f"[Retry {attempt+1}] Instrument load failed: {e}")
-                time.sleep(1)
-        raise Exception("❌ Failed to load instrument master")
+            except Exception as exc:
+                log.warning(f"Instrument download attempt {attempt+1} failed: {exc}")
+                time.sleep(2)
+        raise RuntimeError("Failed to load instrument master after 3 attempts")
 
-    def get_spot(self, symbol="NIFTY", retries=3):
-        try:
-            instrument_key = self.INDEX_KEYS.get(symbol.upper())
-            if not instrument_key:
-                raise Exception(f"No index key configured for symbol: {symbol}")
-            for attempt in range(retries):
-                try:
-                    response = self.safe_ltp([instrument_key])
-                    if response and response.data:
-                        ltp_obj = list(response.data.values())[0]
-                        price = float(ltp_obj.last_price)
-                        logging.info(f"📊 {symbol} Spot = {price}")
-                        return price
-                except Exception as e:
-                    logging.warning(f"[Retry {attempt+1}] get_spot failed: {e}")
-                    time.sleep(2)
-            logging.error(f"❌ get_spot: all retries exhausted for {symbol}")
+    # ── Spot price ────────────────────────────────────────────────────────────
+    def get_spot(self, symbol: str = "NIFTY", retries: int = 3) -> float | None:
+        key = INDEX_KEYS.get(symbol.upper())
+        if not key:
+            log.error(f"No index key for {symbol}")
             return None
-        except Exception as e:
-            logging.error(f"❌ get_spot error: {e}")
-            return None
+        for attempt in range(retries):
+            try:
+                resp = self._safe_ltp([key])
+                if resp and resp.data:
+                    price = float(list(resp.data.values())[0].last_price)
+                    log.info(f"{symbol} spot = {price:,.2f}")
+                    return price
+            except Exception as exc:
+                log.warning(f"get_spot attempt {attempt+1}: {exc}")
+                time.sleep(2)
+        log.error(f"get_spot: all retries exhausted for {symbol}")
+        return None
 
-    def get_nearest_expiry(self, symbol="NIFTY"):
+    # ── Nearest expiry ────────────────────────────────────────────────────────
+    def get_nearest_expiry(self, symbol: str = "NIFTY") -> str | None:
         try:
             instruments = self.load_instruments()
             expiries = sorted({
-                item.get("expiry")
-                for item in instruments
-                if (
-                    item.get("exchange") == "NSE_FO"
-                    and item.get("name", "").upper() == symbol.upper()
-                    and item.get("instrument_type") == "OPTIDX"
-                    and item.get("expiry")
-                )
+                i["expiry"] for i in instruments
+                if i.get("exchange") == "NSE_FO"
+                and i.get("name", "").upper() == symbol.upper()
+                and i.get("instrument_type") == "OPTIDX"
+                and i.get("expiry")
             })
             if not expiries:
-                logging.error(f"❌ No expiries found for {symbol}")
+                log.error(f"No expiries found for {symbol}")
                 return None
-            logging.info(f"📅 Nearest expiry for {symbol}: {expiries[0]}")
+            log.info(f"Nearest expiry {symbol}: {expiries[0]}")
             return expiries[0]
-        except Exception as e:
-            logging.error(f"❌ get_nearest_expiry error: {e}")
+        except Exception as exc:
+            log.error(f"get_nearest_expiry: {exc}")
             return None
 
-    def get_option_chain(self, symbol="NIFTY", range_size=1000):
+    # ── Option chain ──────────────────────────────────────────────────────────
+    def get_option_chain(self, symbol: str = "NIFTY", range_size: int = 1000):
+        try:
+            from config import SETTINGS
+            default_iv = SETTINGS.default_iv
+            default_oi = SETTINGS.default_oi
+        except Exception:
+            default_iv = 0.18
+            default_oi = 50000
+
         try:
             instruments = self.load_instruments()
             spot = self.get_spot(symbol)
             if not spot:
-                logging.error(f"❌ Could not fetch spot for {symbol}")
                 return [], None
 
             expiry = self.get_nearest_expiry(symbol)
             if not expiry:
-                logging.error(f"❌ No expiry found for {symbol}")
                 return [], None
 
-            logging.info(f"📅 Building option chain for {symbol} | Expiry: {expiry} | Spot: {spot}")
+            log.info(f"Building chain {symbol} | expiry={expiry} | spot={spot:,.0f}")
 
             options = [
                 i for i in instruments
-                if (
-                    i.get("exchange") == "NSE_FO"
-                    and i.get("name", "").upper() == symbol.upper()
-                    and i.get("instrument_type") == "OPTIDX"
-                    and i.get("expiry") == expiry
-                )
+                if i.get("exchange") == "NSE_FO"
+                and i.get("name", "").upper() == symbol.upper()
+                and i.get("instrument_type") == "OPTIDX"
+                and i.get("expiry") == expiry
+                and i.get("strike")
+                and abs(float(i["strike"]) - spot) <= range_size
             ]
 
-            if not options:
-                logging.error(f"❌ No options found for {symbol} expiry {expiry}")
-                return [], None
-
-            grouped = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
+            grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
 
             for opt in options:
-                strike_raw = opt.get("strike")
-                if not strike_raw:
+                strike = float(opt["strike"])
+                side   = opt.get("option_type")
+                if side not in ("CE", "PE"):
                     continue
                 try:
-                    strike = float(strike_raw)
-                except ValueError:
-                    continue
-
-                if abs(strike - spot) > range_size:
-                    continue
-
-                try:
-                    response = self.safe_ltp([opt["instrument_key"]])
-                    if not response or not response.data:
+                    resp = self._safe_ltp([opt["instrument_key"]])
+                    if not resp or not resp.data:
                         continue
+                    ltp = float(list(resp.data.values())[0].last_price)
 
-                    ltp_obj = list(response.data.values())[0]
-                    side = opt.get("option_type")
-                    if side not in ("CE", "PE"):
-                        continue
-
-                    entry = grouped[strike]
-                    entry["strikePrice"] = strike
-
-                   # Fetch OI + IV from full quote, fallback to hardcoded defaults
-                    oi = 0
-                    iv = 0.2
+                    oi, iv = default_oi, default_iv
                     try:
-                        full = self.safe_quote([opt["instrument_key"]])
+                        full = self._safe_quote([opt["instrument_key"]])
                         if full and full.data:
-                            q = list(full.data.values())[0]
-                            oi = getattr(q, "oi", None)
-                            iv = getattr(q, "implied_volatility", None)
+                            q  = list(full.data.values())[0]
+                            oi = int(getattr(q, "oi", 0) or 0) or default_oi
+                            iv_raw = getattr(q, "implied_volatility", None)
+                            iv = float(iv_raw) / 100.0 if iv_raw else default_iv
                     except Exception:
                         pass
 
-                    # Hardcoded fallbacks if API returns None/0
-                    if not oi or oi == 0:
-                        oi = 50000  # default OI — treat all strikes equally
+                    sym = opt.get("tradingsymbol", "").strip()
+                    if not sym:
+                        sym = f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
 
-                    if not iv or iv == 0:
-                        iv = 0.15   # 15% IV — typical for near-expiry NIFTY
-
-                    # Tradingsymbol fallback: build it from parts if missing
-                    tradingsymbol = opt.get("tradingsymbol", "").strip()
-                    if not tradingsymbol:
-                        expiry_fmt = expiry.replace("-", "")  # 20260428
-                        tradingsymbol = f"NIFTY{expiry_fmt}{int(strike)}{side}"
-
-                    entry[side] = {
-                        "ltp":            getattr(ltp_obj, "last_price", None),
-                        "instrument_key": opt["instrument_key"],
-                        "tradingsymbol":  tradingsymbol,
-                        "oi":             oi,
+                    grouped[strike]["strikePrice"] = strike
+                    grouped[strike][side] = {
+                        "ltp":            ltp,
                         "iv":             iv,
+                        "oi":             oi,
+                        "tradingsymbol":  sym,
+                        "instrument_key": opt["instrument_key"],
                     }
-                    time.sleep(0.1)
+                    time.sleep(float(os.getenv("QUOTE_THROTTLE_SECONDS", "0.05")))
+                except Exception as exc:
+                    log.warning(f"Skipping strike {strike} {side}: {exc}")
 
-                except Exception as e:
-                    logging.warning(f"⚠️ Skipping strike {strike}: {e}")
-                    continue
-
-            chain = sorted(grouped.values(), key=lambda x: x["strikePrice"])
-            logging.info(f"📊 Option chain built: {len(chain)} strikes for {symbol}")
+            chain = sorted(
+                [v for v in grouped.values() if v["strikePrice"] is not None],
+                key=lambda x: x["strikePrice"],
+            )
+            log.info(f"Chain built: {len(chain)} strikes for {symbol}")
             return chain, spot
 
-        except Exception as e:
-            logging.error(f"❌ get_option_chain error: {e}")
+        except Exception as exc:
+            log.error(f"get_option_chain: {exc}")
             return [], None
 
-    def place_order(self, instrument_key, side, qty, price=None):
+    # ── Historical candles ────────────────────────────────────────────────────
+    def get_candles(self, symbol: str = "NIFTY", interval: str = "day",
+                    days: int = 365) -> "pd.DataFrame | None":
+        """
+        Fetch OHLCV candles from Upstox Historical Data API.
+        interval: 'day' | '30minute' | 'week' | 'month'
+        Returns a DataFrame with columns: timestamp, open, high, low, close, volume
+        """
+        import pandas as pd
+
+        key = INDEX_KEYS.get(symbol.upper())
+        if not key:
+            log.warning(f"get_candles: no index key for {symbol}")
+            return None
+
+        # Upstox historical API uses instrument_key with | replaced by %7C
+        encoded_key = key.replace("|", "%7C")
+        to_date   = datetime.now().strftime("%Y-%m-%d")
+        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        url = (
+            f"https://api.upstox.com/v2/historical-candle/{encoded_key}"
+            f"/{interval}/{to_date}/{from_date}"
+        )
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept":        "application/json",
+        }
+
         for attempt in range(3):
             try:
-                order = {
-                    "quantity": qty,
-                    "product": "D",
-                    "validity": "DAY",
-                    "instrument_token": instrument_key,
-                    "order_type": "MARKET" if price is None else "LIMIT",
-                    "transaction_type": side.upper(),
-                    "price": price or 0,
-                    "tag": "algo_bot"
-                }
-                response = self.order_api.place_order(order)
-                logging.info(f"✅ Order placed: {response}")
-                return response
-            except Exception as e:
-                logging.warning(f"[Retry {attempt+1}] Order failed: {e}")
-                time.sleep(1)
-        logging.error("❌ Order failed after 3 attempts")
+                resp = requests.get(url, headers=headers,
+                                    timeout=int(os.getenv("HTTP_TIMEOUT_SECONDS", "15")))
+                resp.raise_for_status()
+                data = resp.json()
+                candles = data.get("data", {}).get("candles", [])
+                if not candles:
+                    log.warning(f"get_candles: empty response for {symbol}")
+                    return None
+
+                df = pd.DataFrame(candles,
+                                  columns=["timestamp", "open", "high", "low",
+                                           "close", "volume", "oi"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df = (df.drop(columns=["oi"], errors="ignore")
+                        .sort_values("timestamp")
+                        .reset_index(drop=True))
+                log.info(f"get_candles: {symbol} {len(df)} bars via Upstox")
+                return df
+            except Exception as exc:
+                log.warning(f"get_candles attempt {attempt+1}: {exc}")
+                time.sleep(2)
         return None
 
-    def get_positions(self):
+    # ── Order placement ───────────────────────────────────────────────────────
+    def place_order(self, instrument_key: str, side: str, qty: int,
+                    price: float | None = None) -> dict | None:
+        from config import SETTINGS
+        if SETTINGS.dry_run:
+            log.info(f"[DRY RUN] place_order {side} {qty} @ {instrument_key}")
+            return {"dry_run": True, "instrument_key": instrument_key,
+                    "side": side, "qty": qty}
+        for attempt in range(int(os.getenv("API_RETRIES", "3"))):
+            try:
+                order = {
+                    "quantity":         qty,
+                    "product":          os.getenv("ORDER_PRODUCT", "D"),
+                    "validity":         os.getenv("ORDER_VALIDITY", "DAY"),
+                    "instrument_token": instrument_key,
+                    "order_type":       "MARKET" if price is None else "LIMIT",
+                    "transaction_type": side.upper(),
+                    "price":            price or 0,
+                    "tag":              os.getenv("ORDER_TAG", "algo_bot"),
+                }
+                resp = self.order_api.place_order(order)
+                log.info(f"Order placed: {resp}")
+                return resp
+            except Exception as exc:
+                log.warning(f"place_order attempt {attempt+1}: {exc}")
+                time.sleep(float(os.getenv("API_RETRY_SLEEP_SECONDS", "1")))
+        log.error("place_order: all retries exhausted")
+        return None
+
+    def get_positions(self) -> list:
         return []
 
-    def logout(self):
-        logging.info("👋 Logout")
+    def logout(self) -> None:
+        log.info("Broker logout")

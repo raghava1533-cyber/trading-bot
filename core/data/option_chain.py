@@ -1,49 +1,26 @@
-from nsepython import option_chain
-import time
+﻿"""
+data/option_chain.py
+Fetches option chain via Upstox broker (primary) or returns empty (no nsepython).
+Use broker.get_option_chain() directly in most cases.
+"""
+import logging
 
-def get_nse_option_chain(symbol="NIFTY", retries=3):
-    for attempt in range(retries):
-        try:
-            data = option_chain(symbol)
+log = logging.getLogger(__name__)
 
-            if not data or "records" not in data:
-                print("⚠️ NSE empty response, retrying...")
-                time.sleep(1)
-                continue
 
-            records = data["records"]
-            spot = records.get("underlyingValue", 0)
+def get_option_chain(symbol: str = "NIFTY", broker=None,
+                     range_size: int = 1000) -> tuple[list, float | None]:
+    """
+    Fetch option chain using the Upstox broker.
+    Falls back to empty list if broker is unavailable.
 
-            chain = []
-
-            for row in records.get("data", []):
-                strike = row.get("strikePrice")
-
-                ce = row.get("CE", {})
-                pe = row.get("PE", {})
-
-                chain.append({
-                    "strikePrice": strike,
-                    "CE": {
-                        "ltp": ce.get("lastPrice"),
-                        "oi": ce.get("openInterest"),
-                        "iv": ce.get("impliedVolatility"),
-                    },
-                    "PE": {
-                        "ltp": pe.get("lastPrice"),
-                        "oi": pe.get("openInterest"),
-                        "iv": pe.get("impliedVolatility"),
-                    }
-                })
-
-            if not chain:
-                print("⚠️ Empty chain parsed")
-                continue
-
-            return chain, spot
-
-        except Exception as e:
-            print(f"⚠️ NSE fetch error: {e}")
-            time.sleep(1)
-
-    return None, 0
+    Returns: (chain, spot)  where chain is list of strike dicts.
+    """
+    if broker is None:
+        log.warning("get_option_chain: no broker provided — returning empty chain")
+        return [], None
+    try:
+        return broker.get_option_chain(symbol=symbol, range_size=range_size)
+    except Exception as exc:
+        log.error(f"get_option_chain: {exc}")
+        return [], None
