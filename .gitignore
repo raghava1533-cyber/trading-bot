@@ -13,3 +13,12 @@ __pycache__/
 *.log
 .env
 *.env*
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+frontend/.env.local
+
+# Python
+*.pkl
+trading_bot.log

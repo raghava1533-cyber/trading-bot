@@ -1,0 +1,12 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install",
+  "rewrites": [
+    {
+      "source": "/api/bot/:path*",
+      "destination": "https://trading-bot-api.onrender.com/:path*"
+    }
+  ]
+}

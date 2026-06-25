@@ -1,0 +1,48 @@
+# render.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Render Blueprint — defines all services for the trading bot backend.
+# Commit this file to your repo root and connect it in the Render dashboard.
+# Docs: https://render.com/docs/blueprint-spec
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── 1. FastAPI Web Service (API + Bot) ──────────────────────────────────────
+  - type: web
+    name: trading-bot-api
+    runtime: python
+    region: singapore          # closest to NSE/BSE
+    plan: starter              # upgrade to standard for always-on
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+
+    envVars:
+      # ── Upstox credentials (set values in Render dashboard, NOT here) ──
+      - key: UPSTOX_ACCESS_TOKEN
+        sync: false            # mark as secret — fill in Render dashboard
+
+      # ── Redis — auto-injected by Render when linked to the Redis addon ──
+      - key: REDIS_URL
+        fromService:
+          name: trading-bot-redis
+          type: redis
+          property: connectionString
+
+      # ── Frontend URL for CORS (set to your Vercel deployment URL) ──
+      - key: FRONTEND_URL
+        value: https://your-app.vercel.app   # ← replace after Vercel deploy
+
+      # ── Bot toggle: set to "false" to run API-only (no live trading) ──
+      - key: BOT_ENABLED
+        value: "true"
+
+      # ── Python path so `core/` modules resolve correctly ──
+      - key: PYTHONPATH
+        value: ./core
+
+  # ── 2. Redis Addon ──────────────────────────────────────────────────────────
+  - type: redis
+    name: trading-bot-redis
+    region: singapore
+    plan: free                 # upgrade to starter for persistence
+    maxmemoryPolicy: allkeys-lru
