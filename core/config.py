@@ -1,4 +1,4 @@
-﻿"""Application configuration — all values from .env with safe defaults."""
+"""Application configuration — all values from .env with safe defaults."""
 from __future__ import annotations
 import json, os
 from dataclasses import dataclass
@@ -87,7 +87,7 @@ def load_settings():
         market_close_time=_get_time("MARKET_CLOSE_TIME","15:15"),
         log_file=os.getenv("LOG_FILE","trading_bot.log"),
         redis_url=os.getenv("REDIS_URL","redis://localhost:6379"),
-        model_path=os.getenv("MODEL_PATH","models/xgb.pkl"),
+        model_path=os.path.join(os.path.dirname(__file__), "..", os.getenv("MODEL_PATH","models/xgb.pkl")),
         instrument_cache_file=os.getenv("INSTRUMENT_CACHE_FILE","instruments_cache.json"),
         instrument_cache_ttl_hours=_get_float("INSTRUMENT_CACHE_TTL_HOURS",12.0),
         instrument_master_url=os.getenv("INSTRUMENT_MASTER_URL","https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"),
