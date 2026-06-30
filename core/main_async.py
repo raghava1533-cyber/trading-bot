@@ -1,4 +1,4 @@
-﻿"""
+"""
 main_async.py  -  Trading Bot Entry Point
 
 Run:  python core/main_async.py
@@ -206,15 +206,46 @@ def launch_dashboard():
 
 
 # ── State writer ──────────────────────────────────────────────────────────────
-def _write_state(updates: dict):
+def _write_state(engine, idx: str, spot, regime: str):
+    """Write full bot state to STATE_FILE for dashboard consumption."""
     try:
+        pnl = engine.get_pnl()
+        # Build serializable positions list
+        positions_out = []
+        for pos in engine.positions:
+            positions_out.append({
+                "strategy":   pos["strategy"],
+                "index":      pos.get("index", idx),
+                "entry_time": pos.get("entry_time", ""),
+                "open":       pos["open"],
+                "unrealized": pos.get("unrealized", 0),
+                "max_profit": pos.get("max_profit", 0),
+                "max_loss":   pos.get("max_loss",   0),
+                "net_credit": pos.get("net_credit", 0),
+                "margin_info": pos.get("margin_info", {}),
+                "legs": pos.get("legs", []),
+            })
+
         data = {}
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        data.update(updates)
+
+        data[f"spot_{idx}"]   = str(spot)
+        data[f"regime_{idx}"] = regime
+        data[f"pnl_{idx}"]    = json.dumps(pnl, default=str)
+        data["all_positions"] = json.dumps({idx: positions_out}, default=str)
+        data["last_update"]   = datetime.now().isoformat(timespec="seconds")
+
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+            json.dump(data, f, default=str)
+
+        # Also push to redis/in-memory store
+        set_data(f"spot_{idx}",   str(spot))
+        set_data(f"regime_{idx}", regime)
+        set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
+        set_data("all_positions", json.dumps({idx: positions_out}, default=str))
+
     except Exception as exc:
         log(f"_write_state: {exc}", logging.WARNING)
 
@@ -292,6 +323,7 @@ async def execute_trade(engine, idx, strategy_name, legs, chain):
         traceback.print_exc()
 
 
+
 # ── Main trading cycle ────────────────────────────────────────────────────────
 _last_closed_log = None   # throttle "market closed" log to once per 5 min
 
@@ -301,7 +333,6 @@ async def run_cycle(broker, model, engine, idx):
         is_open, status_msg = market_status()
 
         if not is_open:
-            # Log "market closed" at most once every 5 minutes
             now = datetime.datetime.now()
             if _last_closed_log is None or (now - _last_closed_log).seconds >= 300:
                 log(f"[{idx}] {status_msg}")
@@ -313,47 +344,74 @@ async def run_cycle(broker, model, engine, idx):
 
         candles = fetch_candles(ticker=cfg["yf_ticker"], broker=broker)
         if candles is None or candles.empty:
+            log(f"[{idx}] No candle data", logging.WARNING)
             return
 
         regime      = predict_regime(model, candles)
         chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"])
         if not chain:
+            log(f"[{idx}] No option chain data", logging.WARNING)
             return
 
+        # Mark to market FIRST (updates leg LTP + unrealized_pnl per leg)
         engine.mark_to_market(chain)
         pnl = engine.get_pnl()
 
-        # Write state for dashboard
-        set_data(f"pnl_{idx}",    str(pnl))
-        set_data(f"spot_{idx}",   spot)
-        set_data(f"regime_{idx}", regime)
-        all_pos = {i: engine.positions for i in SETTINGS.active_indices}
-        _write_state({
-            f"pnl_{idx}":    str(pnl),
-            f"spot_{idx}":   str(spot),
-            f"regime_{idx}": regime,
-            "all_positions": json.dumps(all_pos, default=str),
-        })
+        # Write full state for dashboard
+        _write_state(engine, idx, spot, regime)
 
-        ist = _ist_now()
-        log(f"[{idx}] IST:{ist.strftime('%H:%M:%S')}  Spot:{spot:,.0f}  "
-            f"Regime:{regime}  Unrealized:{pnl['unrealized']:+,.0f}  "
-            f"Total:{pnl['total']:+,.0f}")
+        # ── Terminal log ──────────────────────────────────────────────────────
+        ist      = _ist_now()
+        open_pos = pnl["open_positions"]
+        log(
+            f"[{idx}] {ist.strftime('%H:%M:%S')} IST | "
+            f"Spot:{spot:,.0f} | Regime:{regime} | "
+            f"OpenPos:{open_pos} | "
+            f"Unrealized:Rs{pnl['unrealized']:+,.0f} | "
+            f"TodayPnL:Rs{pnl['today_realized']:+,.0f} | "
+            f"Total:Rs{pnl['total']:+,.0f}"
+        )
 
-        # Exit checks
+        if open_pos > 0:
+            log(
+                f"[{idx}]   MaxProfit:Rs{pnl['max_profit']:,.0f} | "
+                f"MaxLoss:Rs{pnl['max_loss']:,.0f} | "
+                f"NetCredit:Rs{pnl['net_credit']:,.0f} | "
+                f"TodayTrades:{pnl['today_trades']}"
+            )
+            for pos in engine.positions:
+                if not pos["open"]:
+                    continue
+                for leg in pos.get("legs", []):
+                    side   = leg.get("side", "")
+                    strike = leg.get("strike", 0)
+                    otype  = leg.get("type", "")
+                    entry  = leg.get("price", 0)
+                    ltp    = leg.get("ltp", 0)
+                    lpnl   = leg.get("unrealized_pnl", 0)
+                    log(
+                        f"[{idx}]     {side} {otype} {strike:,.0f} | "
+                        f"Entry:Rs{entry:.2f} | LTP:Rs{ltp:.2f} | "
+                        f"LegPnL:Rs{lpnl:+,.0f}"
+                    )
+
+        # ── Exit checks ───────────────────────────────────────────────────────
         if pnl["unrealized"] <= STOP_LOSS:
             log(f"[{idx}] STOP LOSS hit: Rs{pnl['unrealized']:,.0f}", logging.WARNING)
             engine.close_all(exit_reason="STOP_LOSS")
+            _write_state(engine, idx, spot, regime)
             return
+
         if pnl["unrealized"] >= TARGET:
             log(f"[{idx}] TARGET hit: Rs{pnl['unrealized']:,.0f}")
             engine.close_all(exit_reason="TARGET")
+            _write_state(engine, idx, spot, regime)
             return
 
+        # ── Entry checks ──────────────────────────────────────────────────────
         if engine.has_open_positions() or not can_trade(idx):
             return
 
-        # Time to expiry
         expiry_str = broker.get_nearest_expiry(idx)
         T = 0.1
         if expiry_str:
@@ -374,13 +432,13 @@ async def run_cycle(broker, model, engine, idx):
                               spread_width=SPREAD_WIDTH)
         if legs:
             await execute_trade(engine, idx, strategy, legs, chain)
+            _write_state(engine, idx, spot, regime)
         else:
             log(f"[{idx}] {strategy}: no legs returned", logging.WARNING)
 
     except Exception:
         log(f"[{idx}] Cycle error", logging.ERROR)
         traceback.print_exc()
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
