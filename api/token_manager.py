@@ -4,13 +4,13 @@ api/token_manager.py
 Upstox token auto-refresh system for Render deployment.
 
 HOW IT WORKS (zero manual work after first setup):
-  1. Bot starts → checks if token in Redis is valid
-  2. If valid → use it, done
-  3. If expired → bot logs warning, keeps retrying
+  1. Bot starts - checks if token in Redis is valid
+  2. If valid - use it, done
+  3. If expired - bot logs warning, keeps retrying
   4. You open: https://your-render-url.onrender.com/auth
-  5. Click "Login with Upstox" → Upstox login page
+  5. Click "Login with Upstox" - Upstox login page
   6. After login, Upstox redirects to /auth/callback?code=...
-  7. Server exchanges code for token → saves to Redis
+  7. Server exchanges code for token - saves to Redis
   8. Bot picks up new token on next cycle (within 60 seconds)
   9. No Render dashboard, no env var changes, no redeploy needed
 

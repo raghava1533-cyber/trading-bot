@@ -4,8 +4,8 @@ api/server.py  -  FastAPI backend for Render FREE tier
 Endpoints:
   GET  /health          Render health check
   GET  /ping            UptimeRobot keep-alive
-  GET  /auth            Open in browser → Upstox login page
-  GET  /auth/callback   Upstox redirects here after login → saves token
+  GET  /auth            Open in browser - Upstox login page
+  GET  /auth/callback   Upstox redirects here after login - saves token
   GET  /auth/status     Check if token is valid right now
   GET  /state           Full bot state (all indices)
   GET  /state/{index}   Single index state
@@ -179,12 +179,12 @@ _AUTH_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>📈 Upstox Token Refresh</h1>
+  <h1>-- Upstox Token Refresh</h1>
   <p style="color:#a0aec0;margin-top:4px">Trading Bot -- Daily Auth</p>
   <div class="status {status_class}">{status_msg}</div>
-  <a href="{login_url}" class="btn">🔐 Login with Upstox</a>
+  <a href="{login_url}" class="btn">-- Login with Upstox</a>
   <p class="note">
-    Click the button → Login with your Upstox credentials<br>
+    Click the button - Login with your Upstox credentials<br>
     Token saves automatically -- takes about 10 seconds<br>
     Do this once each morning before 9:15 AM IST
   </p>
@@ -214,12 +214,12 @@ _SUCCESS_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <div class="tick">✅</div>
+  <div class="tick">-</div>
   <h1>Token Saved!</h1>
   <p>Your Upstox access token has been saved to Redis.</p>
   <div class="token">{token_preview}...</div>
   <p>The bot will pick up the new token within 60 seconds.</p>
-  <p class="note">You can close this tab. See you tomorrow! 🙏</p>
+  <p class="note">You can close this tab. See you tomorrow! --</p>
 </div>
 </body>
 </html>"""
@@ -240,9 +240,9 @@ _ERROR_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>❌ Auth Error</h1>
+  <h1>- Auth Error</h1>
   <pre>{error}</pre>
-  <p style="margin-top:16px"><a href="/auth">← Try again</a></p>
+  <p style="margin-top:16px"><a href="/auth">- Try again</a></p>
 </div>
 </body>
 </html>"""
@@ -259,10 +259,10 @@ def auth_page():
     valid = check_token_valid(token) if token else False
     if valid:
         status_class = "ok"
-        status_msg   = "✅ Token is valid -- bot is running"
+        status_msg   = "- Token is valid -- bot is running"
     else:
         status_class = "expired"
-        status_msg   = "⚠️ Token expired -- please login below"
+        status_msg   = "-- Token expired -- please login below"
     return _AUTH_HTML.format(
         status_class=status_class,
         status_msg=status_msg,
