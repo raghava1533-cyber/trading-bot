@@ -95,29 +95,76 @@ def _build_state_payload() -> dict:
 
 
 # ── Background tasks ──────────────────────────────────────────────────────────
+# -- Bot task controller ------------------------------------------------------
+_bot_task: asyncio.Task | None = None
+_bot_status = {
+    "running":    False,
+    "start_time": None,
+    "stop_time":  None,
+    "message":    "Not started",
+}
+
+
 async def _run_bot():
+    global _bot_status
+    _bot_status["running"]    = True
+    _bot_status["start_time"] = _dt.datetime.utcnow().isoformat() + "Z"
+    _bot_status["message"]    = "Running"
+    set_data("bot_status", "running")
+    set_data("bot_start_time", _bot_status["start_time"])
+    log.info("Bot task started")
     try:
         from main_async import main as bot_main
-        log.info("Starting trading bot background task...")
         await bot_main()
+    except asyncio.CancelledError:
+        log.info("Bot task cancelled (stop requested)")
+        _bot_status["message"] = "Stopped by user"
     except Exception as exc:
         log.error(f"Bot crashed: {exc}", exc_info=True)
+        _bot_status["message"] = f"Crashed: {exc}"
+    finally:
+        _bot_status["running"]   = False
+        _bot_status["stop_time"] = _dt.datetime.utcnow().isoformat() + "Z"
+        set_data("bot_status", "stopped")
+        log.info("Bot task ended")
+
+
+async def _start_bot():
+    global _bot_task
+    if _bot_task and not _bot_task.done():
+        return {"ok": False, "message": "Bot already running"}
+    _bot_task = asyncio.create_task(_run_bot())
+    return {"ok": True, "message": "Bot started"}
+
+
+async def _stop_bot():
+    global _bot_task
+    if not _bot_task or _bot_task.done():
+        return {"ok": False, "message": "Bot is not running"}
+    _bot_task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(_bot_task), timeout=5.0)
+    except Exception:
+        pass
+    return {"ok": True, "message": "Bot stopped"}
 
 
 async def _broadcast_loop():
     while True:
         try:
             if manager.active:
-                await manager.broadcast(_build_state_payload())
+                payload = _build_state_payload()
+                payload["bot_status"] = _bot_status.copy()
+                await manager.broadcast(payload)
         except Exception as exc:
             log.warning(f"Broadcast error: {exc}")
         await asyncio.sleep(1)
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────────
+# -- Lifespan -----------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load token from Redis into env on startup
+    # Load all credentials from Redis into env on startup
     try:
         from api.token_manager import get_stored_token
         t = get_stored_token()
@@ -126,9 +173,16 @@ async def lifespan(app: FastAPI):
             log.info("Loaded Upstox token from Redis on startup")
     except Exception:
         pass
-
+    try:
+        from infra.redis_bus import get_data as _gd
+        k = _gd("upstox_api_key")
+        s = _gd("upstox_api_secret")
+        if k: os.environ["UPSTOX_API_KEY"]    = k
+        if s: os.environ["UPSTOX_API_SECRET"] = s
+    except Exception:
+        pass
     if os.getenv("BOT_ENABLED", "true").lower() == "true":
-        asyncio.create_task(_run_bot())
+        await _start_bot()
     asyncio.create_task(_broadcast_loop())
     yield
 
@@ -362,6 +416,39 @@ def token_status():
     token = creds.get("access_token", "")
     status = check_token(token) if token else {"valid": False, "reason": "No token"}
     return status
+
+
+
+@app.get("/bot/status")
+def bot_status_endpoint():
+    """Current bot running state."""
+    return {
+        **_bot_status,
+        "task_done": _bot_task.done() if _bot_task else True,
+    }
+
+
+@app.post("/bot/start")
+async def bot_start():
+    """Start the trading bot."""
+    result = await _start_bot()
+    return result
+
+
+@app.post("/bot/stop")
+async def bot_stop():
+    """Stop the trading bot gracefully."""
+    result = await _stop_bot()
+    return result
+
+
+@app.post("/bot/restart")
+async def bot_restart():
+    """Stop then start the bot (picks up new credentials)."""
+    await _stop_bot()
+    await asyncio.sleep(1)
+    result = await _start_bot()
+    return {**result, "message": "Bot restarted"}
 
 
 @app.get("/health")

@@ -34,11 +34,19 @@ interface Trade {
   strategy: string; index: string; entry_time: string; exit_time: string;
   exit_reason: string; pnl: number; max_profit: number; max_loss: number; net_credit: number;
 }
+interface BotStatusInfo {
+  running: boolean;
+  start_time: string | null;
+  stop_time: string | null;
+  message: string;
+  task_done: boolean;
+}
 interface BotState {
   indices: Record<string, IndexState>;
   all_positions: Record<string, Position[]>;
   trade_history: Trade[];
   last_update: string;
+  bot_status?: BotStatusInfo;
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -86,6 +94,7 @@ export default function Dashboard() {
   const [tab, setTab]           = useState<"live" | "history">("live");
   const [closing, setClosing]   = useState<string>("");
   const [showSettings, setShowSettings] = useState(false);
+  const [botAction, setBotAction]       = useState<string>("");
   const wsRef = useRef<WebSocket | null>(null);
 
   const applyState = useCallback((data: BotState) => {
@@ -135,6 +144,15 @@ export default function Dashboard() {
       });
     } catch {}
     setTimeout(() => setClosing(""), 2000);
+  };
+
+  // Bot start/stop/restart
+  const sendBotCmd = async (cmd: "start" | "stop" | "restart") => {
+    setBotAction(cmd);
+    try {
+      await fetch(`${API_BASE}/bot/${cmd}`, { method: "POST" });
+    } catch {}
+    setTimeout(() => setBotAction(""), 2000);
   };
 
   const indices   = state?.indices ?? {};
@@ -207,6 +225,57 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* -- Bot Control Bar -- */}
+      {(() => {
+        const bs = state?.bot_status;
+        const running = bs?.running ?? false;
+        return (
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4 bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className={`flex items-center gap-1.5 text-sm font-bold px-3 py-1 rounded-full border ${
+                running
+                  ? "bg-emerald-950 border-emerald-700 text-emerald-400"
+                  : "bg-gray-800 border-gray-700 text-gray-400"
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${running ? "bg-emerald-400 animate-pulse" : "bg-gray-500"}`} />
+                Bot {running ? "Running" : "Stopped"}
+              </span>
+              {bs?.message && (
+                <span className="text-xs text-gray-500">{bs.message}</span>
+              )}
+              {bs?.start_time && running && (
+                <span className="text-xs text-gray-600">
+                  Started {new Date(bs.start_time).toLocaleTimeString("en-IN")}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => sendBotCmd("start")}
+                disabled={running || botAction !== ""}
+                className="text-sm px-4 py-1.5 rounded-lg font-bold border transition-colors disabled:opacity-40
+                  bg-emerald-900 border-emerald-700 text-emerald-300 hover:bg-emerald-800">
+                {botAction === "start" ? "Starting..." : "Start"}
+              </button>
+              <button
+                onClick={() => sendBotCmd("stop")}
+                disabled={!running || botAction !== ""}
+                className="text-sm px-4 py-1.5 rounded-lg font-bold border transition-colors disabled:opacity-40
+                  bg-red-900 border-red-700 text-red-300 hover:bg-red-800">
+                {botAction === "stop" ? "Stopping..." : "Stop"}
+              </button>
+              <button
+                onClick={() => sendBotCmd("restart")}
+                disabled={botAction !== ""}
+                className="text-sm px-4 py-1.5 rounded-lg font-bold border transition-colors disabled:opacity-40
+                  bg-yellow-900 border-yellow-700 text-yellow-300 hover:bg-yellow-800">
+                {botAction === "restart" ? "Restarting..." : "Restart"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === "live" && (
         <>
