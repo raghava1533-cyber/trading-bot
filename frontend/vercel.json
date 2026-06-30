@@ -3,12 +3,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "installCommand": "npm install",
-  "rewrites": [
-    {
-      "source": "/api/bot/:path*",
-      "destination": "https://trading-bot-api.onrender.com/:path*"
-    }
-  ],
   "env": {
     "NEXT_PUBLIC_API_URL": "https://trading-bot-api.onrender.com"
   }

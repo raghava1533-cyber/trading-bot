@@ -136,15 +136,18 @@ async def lifespan(app: FastAPI):
 # ── App + CORS ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Trading Bot API", version="2.0.0", lifespan=lifespan)
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
-_origins = ["*"] if FRONTEND_URL == "*" else [
-    FRONTEND_URL,
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+_origins = [
     "http://localhost:3000",
     "http://localhost:8501",
+    "http://localhost:8000",
 ]
+if FRONTEND_URL:
+    _origins.append(FRONTEND_URL)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
