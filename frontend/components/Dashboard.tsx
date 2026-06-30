@@ -1,5 +1,6 @@
 "use client";
 import SettingsModal from "./SettingsModal";
+import ConfigPanel from "./ConfigPanel";
 /**
  * Dashboard.tsx - Full trading bot dashboard
  * Connects via WebSocket (live) with REST polling fallback.
@@ -94,6 +95,7 @@ export default function Dashboard() {
   const [tab, setTab]           = useState<"live" | "history">("live");
   const [closing, setClosing]   = useState<string>("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showConfig, setShowConfig]     = useState(false);
   const [botAction, setBotAction]       = useState<string>("");
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -205,6 +207,13 @@ export default function Dashboard() {
             <span className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-500"}`} />
             {connected ? "Live" : "Reconnecting…"}
           </span>
+          <button onClick={() => setShowConfig(true)}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+            Config
+          </button>
           <button onClick={() => setShowSettings(true)}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
             <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -619,6 +628,7 @@ export default function Dashboard() {
       )}
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showConfig   && <ConfigPanel   onClose={() => setShowConfig(false)} />}
       <p className="mt-6 text-center text-xs text-gray-700">
         WebSocket live · REST fallback every 5s · {API_BASE}
       </p>

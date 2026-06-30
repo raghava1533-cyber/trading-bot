@@ -444,6 +444,169 @@ async def bot_restart():
     return {**result, "message": "Bot restarted"}
 
 
+# --- Config endpoints -------------------------------------------------------
+_CONFIG_KEYS = [
+    "DRY_RUN","ACTIVE_INDICES","POLL_INTERVAL_SECONDS","TRADE_COOLDOWN_SECONDS",
+    "MAX_TRADES_PER_DAY","STOP_LOSS","TARGET_PROFIT","TARGET_DELTA",
+    "SPREAD_WIDTH_POINTS","MIN_CREDIT_RATIO","DELTA_HEDGE_THRESHOLD",
+    "REGIME_SIDE_VOL_THRESHOLD","MIN_TIME_TO_EXPIRY_DAYS","PRICE_SCAN_RANGE",
+    "RISK_FREE_RATE","DEFAULT_IV","MIN_OI","BOT_ENABLED",
+    "MARKET_OPEN_TIME","MARKET_CLOSE_TIME","MAX_TRADES_PER_DAY",
+    "BACKTEST_DAYS","BACKTEST_INITIAL_CAPITAL","BACKTEST_INTERVAL",
+    "BACKTEST_STOP_LOSS","BACKTEST_TARGET_PROFIT",
+]
+
+
+@app.get("/config")
+def get_config():
+    """Return all bot config values (from Redis override or env)."""
+    try:
+        from infra.redis_bus import get_data
+        result = {}
+        for key in _CONFIG_KEYS:
+            redis_val = get_data("cfg_" + key.lower())
+            env_val   = os.getenv(key, "")
+            result[key] = {
+                "value":   redis_val if redis_val is not None else env_val,
+                "source":  "redis" if redis_val is not None else "env",
+                "default": env_val,
+            }
+        return {"ok": True, "config": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/config")
+async def save_config(payload: dict):
+    """Save config overrides to Redis. Bot picks them up on next restart."""
+    try:
+        from infra.redis_bus import set_data
+        saved = []
+        for key, value in payload.items():
+            if key.upper() in _CONFIG_KEYS:
+                set_data("cfg_" + key.lower(), str(value))
+                os.environ[key.upper()] = str(value)
+                saved.append(key)
+        return {"ok": True, "saved": saved, "message": f"Saved {len(saved)} settings. Restart bot to apply."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# --- Train endpoints ---------------------------------------------------------
+_train_task: asyncio.Task | None = None
+_train_log:  list = []
+_train_status = {"running": False, "message": "Not started", "progress": ""}
+
+
+async def _run_training(years: int, indices: list):
+    global _train_status, _train_log
+    _train_status = {"running": True, "message": "Training started...", "progress": "0%"}
+    _train_log = []
+    set_data("train_status", "running")
+    try:
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
+        from config import INDEX_CONFIG
+        from data.candles import fetch_candles
+        from ml.regime_xgb import train, label, FEATURE_COLS, _compute_features_per_index
+        from broker.upstox import Broker
+
+        def _log(msg):
+            _train_log.append(msg)
+            _train_status["message"] = msg
+            set_data("train_log", json.dumps(_train_log[-50:]))
+            log.info("[TRAIN] " + msg)
+
+        _log(f"Fetching data for {indices} ({years} years)...")
+        broker = None
+        try:
+            broker = Broker()
+            _log("Broker connected")
+        except Exception as e:
+            _log(f"Broker unavailable: {e} - using yFinance")
+
+        raw_frames = []
+        days = years * 365
+        for i, idx in enumerate(indices):
+            _train_status["progress"] = f"{int((i/len(indices))*50)}%"
+            cfg = INDEX_CONFIG.get(idx)
+            if not cfg:
+                _log(f"{idx}: not in config, skipping")
+                continue
+            _log(f"Fetching {idx} ({days} days)...")
+            try:
+                df = fetch_candles(ticker=cfg["yf_ticker"], interval="1d", days=days, broker=broker)
+                if df is None or df.empty:
+                    _log(f"{idx}: no data")
+                    continue
+                _log(f"{idx}: {len(df)} bars")
+                raw_frames.append(df)
+            except Exception as e:
+                _log(f"{idx}: fetch failed - {e}")
+
+        if not raw_frames:
+            _log("ERROR: No data fetched. Cannot train.")
+            _train_status["running"] = False
+            return
+
+        _log("Computing features...")
+        _train_status["progress"] = "60%"
+        feat_df = _compute_features_per_index(raw_frames)
+        _log(f"Feature dataset: {len(feat_df)} bars")
+
+        _log("Training XGBoost model...")
+        _train_status["progress"] = "80%"
+        model = train(feat_df)
+
+        labelled = label(feat_df)
+        split    = int(len(labelled) * 0.8)
+        test_df  = labelled.iloc[split:]
+        if not test_df.empty:
+            from ml.regime_xgb import FEATURE_COLS
+            preds = model.predict(test_df[FEATURE_COLS])
+            acc   = (preds == test_df["y"]).mean()
+            _log(f"Hold-out accuracy: {acc*100:.1f}%")
+
+        _train_status["progress"] = "100%"
+        _log("Model saved! Restart bot to use new model.")
+        set_data("train_status", "done")
+    except asyncio.CancelledError:
+        _log("Training cancelled")
+    except Exception as e:
+        _log(f"Training failed: {e}")
+        set_data("train_status", "error")
+    finally:
+        _train_status["running"] = False
+
+
+@app.get("/train/status")
+def train_status_endpoint():
+    return {**_train_status, "log": _train_log[-30:]}
+
+
+class TrainRequest(BaseModel):
+    years:   int  = 3
+    indices: list = ["NIFTY", "BANKNIFTY", "SENSEX"]
+
+
+@app.post("/train/start")
+async def train_start(req: TrainRequest):
+    global _train_task
+    if _train_task and not _train_task.done():
+        return {"ok": False, "message": "Training already running"}
+    _train_task = asyncio.create_task(_run_training(req.years, req.indices))
+    return {"ok": True, "message": f"Training started: {req.years} years, {req.indices}"}
+
+
+@app.post("/train/stop")
+async def train_stop():
+    global _train_task
+    if _train_task and not _train_task.done():
+        _train_task.cancel()
+        return {"ok": True, "message": "Training cancelled"}
+    return {"ok": False, "message": "No training running"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

@@ -61,6 +61,23 @@ class Settings:
     backtest_option_data_format: str; backtest_option_timestamp_tolerance_minutes: int
     backtest_allow_synthetic_fallback: bool
 
+def _apply_redis_overrides():
+    """Pull cfg_* keys from Redis into os.environ so load_settings() picks them up."""
+    try:
+        import redis as _redis
+        url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r   = _redis.from_url(url, decode_responses=True, socket_timeout=2)
+        keys = r.keys("cfg_*")
+        for k in keys:
+            env_key = k[4:].upper()   # cfg_dry_run -> DRY_RUN
+            val     = r.get(k)
+            if val is not None:
+                os.environ[env_key] = val
+    except Exception:
+        pass   # Redis unavailable - use existing env vars
+
+_apply_redis_overrides()
+
 def load_settings():
     indices = tuple(i.strip().upper() for i in os.getenv("ACTIVE_INDICES","NIFTY,BANKNIFTY,SENSEX").split(",") if i.strip())
     return Settings(
