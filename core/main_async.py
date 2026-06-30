@@ -1,4 +1,4 @@
-"""
+﻿"""
 main_async.py  -  Trading Bot Entry Point
 
 Run:  python core/main_async.py
@@ -7,6 +7,16 @@ Run:  python core/main_async.py
   3. Load/train model   - XGBoost regime model
   4. Scan indices       - picks best by regime + OI score
   5. Trading loop       - runs every POLL_INTERVAL_SECONDS (IST-aware)
+
+Regime change logic:
+  Every cycle the model predicts the current regime (BULL/BEAR/SIDE).
+  If the regime changes AND the open position strategy is incompatible,
+  the position is closed immediately and a new one is opened next cycle.
+
+  Compatibility table:
+    IRON_CONDOR  needs SIDE  -> close if BULL or BEAR
+    BULL_PUT     needs BULL  -> close if BEAR or SIDE
+    BEAR_CALL    needs BEAR  -> close if BULL or SIDE
 """
 import asyncio, datetime, json, logging, os, subprocess, sys, tempfile, traceback
 from datetime import date
@@ -30,6 +40,22 @@ STATE_FILE         = os.path.join(tempfile.gettempdir(), "trading_bot_state.json
 
 last_trade_time: dict = {}
 trade_count:     dict = {}
+_last_regime:    dict = {}   # tracks last known regime per index
+
+# Strategy <-> Regime mapping
+_REGIME_TO_STRATEGY = {
+    "SIDE": "IRON_CONDOR",
+    "BULL": "BULL_PUT",
+    "BEAR": "BEAR_CALL",
+}
+
+# Regimes that are INCOMPATIBLE with each strategy
+# If current regime is in this set -> close the position immediately
+_STRATEGY_INCOMPATIBLE_REGIMES = {
+    "IRON_CONDOR": {"BULL", "BEAR"},   # condor needs sideways; close if trending
+    "BULL_PUT":    {"BEAR", "SIDE"},   # bull put needs bullish; close if bearish/flat
+    "BEAR_CALL":   {"BULL", "SIDE"},   # bear call needs bearish; close if bullish/flat
+}
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -49,25 +75,16 @@ def log(msg, level=logging.INFO):
 
 # ── IST time helper ───────────────────────────────────────────────────────────
 def _ist_now() -> datetime.datetime:
-    """
-    Return current time in IST (UTC+5:30).
-    Works regardless of the machine's local timezone.
-    Does NOT require pytz or zoneinfo.
-    """
-    utc_now = datetime.datetime.utcnow()
+    utc_now    = datetime.datetime.utcnow()
     ist_offset = datetime.timedelta(hours=5, minutes=30)
     return utc_now + ist_offset
 
 
 # ── Market status ─────────────────────────────────────────────────────────────
-def market_status() -> tuple[bool, str]:
-    """
-    Returns (is_open: bool, reason: str) using IST time.
-    Checks: weekend, market hours.
-    """
+def market_status() -> tuple:
     now = _ist_now()
     t   = now.time()
-    wd  = now.weekday()   # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+    wd  = now.weekday()
 
     if wd >= 5:
         day = "Saturday" if wd == 5 else "Sunday"
@@ -100,6 +117,16 @@ def can_trade(idx: str) -> bool:
     if lt and (datetime.datetime.now() - lt).seconds < TRADE_COOLDOWN:
         return False
     return True
+
+
+def _regime_conflicts(pos: dict, current_regime: str) -> bool:
+    """
+    Returns True if the open position's strategy is incompatible
+    with the current regime and must be closed.
+    """
+    strategy    = pos.get("strategy", "")
+    bad_regimes = _STRATEGY_INCOMPATIBLE_REGIMES.get(strategy, set())
+    return current_regime in bad_regimes
 
 
 # ── Step 1: Auto-authenticate ─────────────────────────────────────────────────
@@ -210,20 +237,19 @@ def _write_state(engine, idx: str, spot, regime: str):
     """Write full bot state to STATE_FILE for dashboard consumption."""
     try:
         pnl = engine.get_pnl()
-        # Build serializable positions list
         positions_out = []
         for pos in engine.positions:
             positions_out.append({
-                "strategy":   pos["strategy"],
-                "index":      pos.get("index", idx),
-                "entry_time": pos.get("entry_time", ""),
-                "open":       pos["open"],
-                "unrealized": pos.get("unrealized", 0),
-                "max_profit": pos.get("max_profit", 0),
-                "max_loss":   pos.get("max_loss",   0),
-                "net_credit": pos.get("net_credit", 0),
+                "strategy":    pos["strategy"],
+                "index":       pos.get("index", idx),
+                "entry_time":  pos.get("entry_time", ""),
+                "open":        pos["open"],
+                "unrealized":  pos.get("unrealized", 0),
+                "max_profit":  pos.get("max_profit", 0),
+                "max_loss":    pos.get("max_loss",   0),
+                "net_credit":  pos.get("net_credit", 0),
                 "margin_info": pos.get("margin_info", {}),
-                "legs": pos.get("legs", []),
+                "legs":        pos.get("legs", []),
             })
 
         data = {}
@@ -235,12 +261,11 @@ def _write_state(engine, idx: str, spot, regime: str):
         data[f"regime_{idx}"] = regime
         data[f"pnl_{idx}"]    = json.dumps(pnl, default=str)
         data["all_positions"] = json.dumps({idx: positions_out}, default=str)
-        data["last_update"]   = datetime.now().isoformat(timespec="seconds")
+        data["last_update"]   = datetime.datetime.now().isoformat(timespec="seconds")
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, default=str)
 
-        # Also push to redis/in-memory store
         set_data(f"spot_{idx}",   str(spot))
         set_data(f"regime_{idx}", regime)
         set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
@@ -280,8 +305,10 @@ def pick_best_index(broker, model, indices):
             ) / max(len(nearby), 1)
             rs = {"SIDE": 3, "BULL": 2, "BEAR": 2}.get(regime, 1)
             scores[idx] = {
-                "score": rs * (avg_oi / 100000),
-                "regime": regime, "spot": spot, "label": cfg["label"],
+                "score":  rs * (avg_oi / 100000),
+                "regime": regime,
+                "spot":   spot,
+                "label":  cfg["label"],
             }
             log(f"  {cfg['label']:<14} Spot:{spot:>10,.2f}  "
                 f"Regime:{regime:<5}  Score:{scores[idx]['score']:.2f}")
@@ -300,7 +327,8 @@ def pick_best_index(broker, model, indices):
 async def execute_trade(engine, idx, strategy_name, legs, chain):
     global last_trade_time, trade_count
     try:
-        trade_legs, margin_info = [], None
+        trade_legs  = []
+        margin_info = None
         for leg in legs:
             side, strike, opt_type, symbol, entry_ltp, margin = leg
             ltp = entry_ltp if entry_ltp is not None else get_ltp(chain, strike, opt_type)
@@ -309,29 +337,32 @@ async def execute_trade(engine, idx, strategy_name, legs, chain):
                 return
             margin_info = margin
             trade_legs.append({
-                "side": side, "strike": strike, "type": opt_type,
-                "price": ltp, "symbol": symbol, "ltp": ltp,
-                "qty": INDEX_CONFIG[idx]["lot_size"], "unrealized_pnl": 0,
+                "side":          side,
+                "strike":        strike,
+                "type":          opt_type,
+                "price":         ltp,
+                "symbol":        symbol,
+                "ltp":           ltp,
+                "qty":           INDEX_CONFIG[idx]["lot_size"],
+                "unrealized_pnl": 0,
             })
         engine.add_position(strategy_name, trade_legs, margin_info, index=idx)
         last_trade_time[idx] = datetime.datetime.now()
         trade_count[idx]     = trade_count.get(idx, 0) + 1
-        log(f"[{idx}] Trade executed: {strategy_name}  "
+        log(f"[{idx}] NEW POSITION: {strategy_name}  "
             f"({'DRY RUN' if SETTINGS.dry_run else 'LIVE'})")
     except Exception:
         log("Trade execution failed", logging.ERROR)
         traceback.print_exc()
 
 
-
 # ── Main trading cycle ────────────────────────────────────────────────────────
 _last_closed_log = None   # throttle "market closed" log to once per 5 min
 
 async def run_cycle(broker, model, engine, idx):
-    global _last_closed_log
+    global _last_closed_log, _last_regime
     try:
         is_open, status_msg = market_status()
-
         if not is_open:
             now = datetime.datetime.now()
             if _last_closed_log is None or (now - _last_closed_log).seconds >= 300:
@@ -353,19 +384,58 @@ async def run_cycle(broker, model, engine, idx):
             log(f"[{idx}] No option chain data", logging.WARNING)
             return
 
-        # Mark to market FIRST (updates leg LTP + unrealized_pnl per leg)
+        # Mark to market (updates leg LTP + unrealized_pnl)
         engine.mark_to_market(chain)
         pnl = engine.get_pnl()
 
-        # Write full state for dashboard
+        # ── Regime change detection & incompatible position close ─────────────
+        prev_regime = _last_regime.get(idx)
+        regime_changed = prev_regime is not None and prev_regime != regime
+
+        if regime_changed:
+            log(
+                f"[{idx}] *** REGIME CHANGE: {prev_regime} -> {regime} ***",
+                logging.WARNING,
+            )
+
+        # Find open positions that conflict with the current regime
+        conflicting = [
+            pos for pos in engine.positions
+            if pos["open"] and _regime_conflicts(pos, regime)
+        ]
+
+        if conflicting:
+            strats = ", ".join(p["strategy"] for p in conflicting)
+            log(
+                f"[{idx}] Closing {len(conflicting)} incompatible position(s) "
+                f"[{strats}] — strategy does not match regime={regime}",
+                logging.WARNING,
+            )
+            for pos in conflicting:
+                engine.close_position(pos, exit_reason=f"REGIME_CHANGE_{prev_regime}_TO_{regime}")
+            pnl = engine.get_pnl()   # refresh after close
+            _write_state(engine, idx, spot, regime)
+            log(
+                f"[{idx}] Incompatible positions closed. "
+                f"Realized P&L: Rs{pnl['realized']:+,.0f}  "
+                f"New position will be entered next cycle."
+            )
+
+        # Update tracked regime
+        _last_regime[idx] = regime
+
+        # Write state for dashboard
         _write_state(engine, idx, spot, regime)
 
         # ── Terminal log ──────────────────────────────────────────────────────
         ist      = _ist_now()
         open_pos = pnl["open_positions"]
+        regime_display = (
+            f"{prev_regime}->{regime}" if regime_changed else regime
+        )
         log(
             f"[{idx}] {ist.strftime('%H:%M:%S')} IST | "
-            f"Spot:{spot:,.0f} | Regime:{regime} | "
+            f"Spot:{spot:,.0f} | Regime:{regime_display} | "
             f"OpenPos:{open_pos} | "
             f"Unrealized:Rs{pnl['unrealized']:+,.0f} | "
             f"TodayPnL:Rs{pnl['today_realized']:+,.0f} | "
@@ -383,19 +453,15 @@ async def run_cycle(broker, model, engine, idx):
                 if not pos["open"]:
                     continue
                 for leg in pos.get("legs", []):
-                    side   = leg.get("side", "")
-                    strike = leg.get("strike", 0)
-                    otype  = leg.get("type", "")
-                    entry  = leg.get("price", 0)
-                    ltp    = leg.get("ltp", 0)
-                    lpnl   = leg.get("unrealized_pnl", 0)
                     log(
-                        f"[{idx}]     {side} {otype} {strike:,.0f} | "
-                        f"Entry:Rs{entry:.2f} | LTP:Rs{ltp:.2f} | "
-                        f"LegPnL:Rs{lpnl:+,.0f}"
+                        f"[{idx}]     {leg.get('side','')} {leg.get('type','')} "
+                        f"{leg.get('strike',0):,.0f} | "
+                        f"Entry:Rs{leg.get('price',0):.2f} | "
+                        f"LTP:Rs{leg.get('ltp',0):.2f} | "
+                        f"LegPnL:Rs{leg.get('unrealized_pnl',0):+,.0f}"
                     )
 
-        # ── Exit checks ───────────────────────────────────────────────────────
+        # ── Stop loss / target exit ───────────────────────────────────────────
         if pnl["unrealized"] <= STOP_LOSS:
             log(f"[{idx}] STOP LOSS hit: Rs{pnl['unrealized']:,.0f}", logging.WARNING)
             engine.close_all(exit_reason="STOP_LOSS")
@@ -408,7 +474,7 @@ async def run_cycle(broker, model, engine, idx):
             _write_state(engine, idx, spot, regime)
             return
 
-        # ── Entry checks ──────────────────────────────────────────────────────
+        # ── Entry: only if no open positions and within trade limits ──────────
         if engine.has_open_positions() or not can_trade(idx):
             return
 
@@ -421,15 +487,16 @@ async def run_cycle(broker, model, engine, idx):
             except Exception:
                 pass
 
-        strategy = {"SIDE": "IRON_CONDOR", "BULL": "BULL_PUT",
-                    "BEAR": "BEAR_CALL"}.get(regime)
+        strategy = _REGIME_TO_STRATEGY.get(regime)
         if not strategy:
             return
 
-        legs = select_strikes(chain, spot, strategy, T=T,
-                              target_delta=TARGET_DELTA,
-                              lot_size=lot_size,
-                              spread_width=SPREAD_WIDTH)
+        legs = select_strikes(
+            chain, spot, strategy, T=T,
+            target_delta=TARGET_DELTA,
+            lot_size=lot_size,
+            spread_width=SPREAD_WIDTH,
+        )
         if legs:
             await execute_trade(engine, idx, strategy, legs, chain)
             _write_state(engine, idx, spot, regime)
@@ -440,6 +507,7 @@ async def run_cycle(broker, model, engine, idx):
         log(f"[{idx}] Cycle error", logging.ERROR)
         traceback.print_exc()
 
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
     setup_logging()
@@ -448,30 +516,25 @@ async def main():
     log("  ALGO TRADING BOT  -  Starting up")
     log("=" * 60)
 
-    # Step 1: Authenticate
     log("Step 1/4: Checking Upstox authentication...")
     if not auto_authenticate():
         log("Authentication failed. Run:  python core/broker/auth.py", logging.ERROR)
         sys.exit(1)
 
-    # Step 2: Dashboard
     log("Step 2/4: Launching dashboard...")
     dash_proc = launch_dashboard()
     if dash_proc:
         log("Dashboard: http://localhost:8501")
 
-    # Step 3: Model
     log("Step 3/4: Loading regime model...")
     broker = Broker()
     model  = load_model(broker=broker)
     log("Model ready")
 
-    # Step 4: Best index
     log("Step 4/4: Scanning indices...")
     active = pick_best_index(broker, model, list(INDEX_CONFIG.keys()))
     cfg    = INDEX_CONFIG[active]
 
-    # Show market status
     is_open, status_msg = market_status()
     ist = _ist_now()
 
@@ -487,6 +550,11 @@ async def main():
     log(f"  Hours      : {SETTINGS.market_open_time.strftime('%H:%M')} - "
         f"{SETTINGS.market_close_time.strftime('%H:%M')} IST  (Mon-Fri)")
     log(f"  Dashboard  : http://localhost:8501")
+    log("-" * 60)
+    log("Regime change rules:")
+    for strat, bad in _STRATEGY_INCOMPATIBLE_REGIMES.items():
+        good = set(_REGIME_TO_STRATEGY.keys()) - bad
+        log(f"  {strat:<14} stays open if regime in {good}  |  closes if regime in {bad}")
     log("-" * 60)
 
     engine = PaperEngine()
