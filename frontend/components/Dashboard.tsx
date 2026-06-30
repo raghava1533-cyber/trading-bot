@@ -51,7 +51,7 @@ interface BotState {
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "https://trading-bot-av9x.onrender.com").replace(/\/$/, "");
 // http -> ws  |  https -> wss  (Vercel is HTTPS so must use WSS to reach Render)
 const WS_URL = API_BASE.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://") + "/ws";
 const INDICES  = ["NIFTY", "BANKNIFTY", "SENSEX"];

@@ -9,11 +9,6 @@
       "destination": "https://trading-bot-av9x.onrender.com/:path*"
     }
   ],
-  "build": {
-    "env": {
-      "NEXT_PUBLIC_API_URL": "https://trading-bot-av9x.onrender.com"
-    }
-  },
   "env": {
     "NEXT_PUBLIC_API_URL": "https://trading-bot-av9x.onrender.com"
   }
