@@ -1,4 +1,4 @@
-use client";
+'use client";
 /**
  * Dashboard.tsx - Full trading bot dashboard
  * Connects via WebSocket (live) with REST polling fallback.
