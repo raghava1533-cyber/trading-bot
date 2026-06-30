@@ -1,6 +1,6 @@
 ""
 api/server.py  -  FastAPI backend for Render FREE tier
-────────────────────────────────────────────────────────
+---
 Endpoints:
   GET  /health          Render health check
   GET  /ping            UptimeRobot keep-alive
@@ -28,7 +28,7 @@ logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=lo
 log = logging.getLogger(__name__)
 
 
-# ── WebSocket manager ─────────────────────────────────────────────────────────
+# --- WebSocket manager ---
 class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
@@ -55,7 +55,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# ── State builder ─────────────────────────────────────────────────────────────
+# --- State builder ---
 def _build_state_payload() -> dict:
     try:
         from config import SETTINGS
@@ -94,7 +94,7 @@ def _build_state_payload() -> dict:
     return state
 
 
-# ── Background tasks ──────────────────────────────────────────────────────────
+# --- Background tasks ---
 async def _run_bot():
     try:
         from main_async import main as bot_main
@@ -114,7 +114,7 @@ async def _broadcast_loop():
         await asyncio.sleep(1)
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────────
+# --- Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load token from Redis into env on startup
@@ -133,7 +133,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# ── App + CORS ────────────────────────────────────────────────────────────────
+# --- App + CORS ---
 app = FastAPI(title="Trading Bot API", version="2.0.0", lifespan=lifespan)
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
@@ -151,9 +151,9 @@ app.add_middleware(
 )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# AUTH ENDPOINTS — open /auth in browser to refresh token daily
-# ═════════════════════════════════════════════════════════════════════════════
+# ---
+# AUTH ENDPOINTS -- open /auth in browser to refresh token daily
+# ---
 
 _AUTH_HTML = """<!DOCTYPE html>
 <html>
@@ -180,12 +180,12 @@ _AUTH_HTML = """<!DOCTYPE html>
 <body>
 <div class="card">
   <h1>📈 Upstox Token Refresh</h1>
-  <p style="color:#a0aec0;margin-top:4px">Trading Bot — Daily Auth</p>
+  <p style="color:#a0aec0;margin-top:4px">Trading Bot -- Daily Auth</p>
   <div class="status {status_class}">{status_msg}</div>
   <a href="{login_url}" class="btn">🔐 Login with Upstox</a>
   <p class="note">
     Click the button → Login with your Upstox credentials<br>
-    Token saves automatically — takes about 10 seconds<br>
+    Token saves automatically -- takes about 10 seconds<br>
     Do this once each morning before 9:15 AM IST
   </p>
 </div>
@@ -259,10 +259,10 @@ def auth_page():
     valid = check_token_valid(token) if token else False
     if valid:
         status_class = "ok"
-        status_msg   = "✅ Token is valid — bot is running"
+        status_msg   = "✅ Token is valid -- bot is running"
     else:
         status_class = "expired"
-        status_msg   = "⚠️ Token expired — please login below"
+        status_msg   = "⚠️ Token expired -- please login below"
     return _AUTH_HTML.format(
         status_class=status_class,
         status_msg=status_msg,
@@ -305,9 +305,9 @@ def auth_status():
     }
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ---
 # STANDARD ENDPOINTS
-# ═════════════════════════════════════════════════════════════════════════════
+# ---
 
 @app.get("/health")
 def health():
@@ -316,7 +316,7 @@ def health():
 
 @app.get("/ping")
 def ping():
-    """UptimeRobot keep-alive — prevents Render free tier sleeping."""
+    """UptimeRobot keep-alive -- prevents Render free tier sleeping."""
     return {"pong": True, "time": _dt.datetime.utcnow().isoformat() + "Z"}
 
 

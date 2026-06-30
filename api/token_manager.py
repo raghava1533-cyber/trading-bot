@@ -1,6 +1,6 @@
 ""
 api/token_manager.py
-────────────────────
+---
 Upstox token auto-refresh system for Render deployment.
 
 HOW IT WORKS (zero manual work after first setup):
@@ -111,7 +111,7 @@ def exchange_code(auth_code: str) -> str:
         timeout=15,
     )
     if resp.status_code != 200:
-        raise RuntimeError(f"Token exchange failed: HTTP {resp.status_code} — {resp.text}")
+        raise RuntimeError(f"Token exchange failed: HTTP {resp.status_code} -- {resp.text}")
     token = resp.json().get("access_token", "")
     if not token:
         raise RuntimeError(f"No access_token in response: {resp.json()}")
