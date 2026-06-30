@@ -1,4 +1,4 @@
-""
+"""
 execution/paper_engine.py
 Tracks open positions, marks to market, computes P&L per leg and per position.
 Writes trade history to disk on close.

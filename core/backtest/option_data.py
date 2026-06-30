@@ -1,4 +1,4 @@
-""Stub for historical option chain provider (CSV/Parquet)."""
+"""Stub for historical option chain provider (CSV/Parquet)."""
 import logging
 import pandas as pd
 

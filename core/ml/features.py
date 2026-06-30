@@ -1,4 +1,4 @@
-mport pandas as pd
+import pandas as pd
 import numpy as np
 
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:

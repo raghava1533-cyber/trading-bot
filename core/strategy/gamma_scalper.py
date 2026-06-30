@@ -1,4 +1,4 @@
-""
+"""
 strategy/gamma_scalper.py
 Gamma scalping helper — detects large intraday moves that warrant re-hedging.
 """

@@ -1,4 +1,4 @@
-""Walk-forward validation for the regime XGBoost model."""
+"""Walk-forward validation for the regime XGBoost model."""
 import logging
 import pandas as pd
 from ml.regime_xgb import train as train_model, FEATURE_COLS, label as lbl

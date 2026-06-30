@@ -1,4 +1,4 @@
-""
+"""
 dashboard/app.py  ─  Algo Trading Bot  ─  Full Live Dashboard
 Layout: STACKED (one index per row, not side-by-side)
 Pages : Live Trading | History & Accuracy | Backtest | Settings
