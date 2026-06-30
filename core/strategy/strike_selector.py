@@ -1,8 +1,38 @@
-﻿import logging, math
+﻿"""
+strategy/strike_selector.py
+
+HOW OPTIONS SPREAD P&L WORKS (important):
+  For a BULL_PUT spread (sell higher strike PE, buy lower strike PE):
+    sell_strike = 23750, buy_strike = 23550  -> spread_width = 200 pts
+    sell_ltp    = 12.00,  buy_ltp   = 1.75   -> credit_per_share = 10.25 Rs
+
+    max_profit  = credit_per_share * lot_size = 10.25 * 75 = Rs 769
+    max_loss    = (spread_width_pts - credit_per_share) * lot_size
+                = (200 - 10.25) * 75 = Rs 14,231
+
+  This gives R:R = 1:0.05 which is TERRIBLE.
+
+  WHY: credit_per_share (Rs 10.25) is only 5% of spread_width (200 pts).
+  For a good trade we need credit >= 25-33% of spread width.
+
+  SOLUTION: enforce MIN_CREDIT_RATIO. If credit < ratio * spread_width,
+  skip this strike and try the next one, or widen the spread.
+
+  GOOD TRADE EXAMPLE:
+    sell_ltp = 60, buy_ltp = 10, sw = 200
+    credit = 50 Rs/share = 25% of spread -> R:R = 1:1.13  (acceptable)
+"""
+import logging, math
 from scipy.stats import norm
 from config import SETTINGS
 
 SPREAD_WIDTH = SETTINGS.spread_width_points
+
+# Minimum credit as a fraction of spread width.
+# credit_per_share must be >= MIN_CREDIT_RATIO * spread_width_pts
+# e.g. 0.25 means credit must be >= 25% of spread (R:R better than 1:3)
+MIN_CREDIT_RATIO = float(getattr(SETTINGS, "min_credit_ratio", 0.25))
+
 
 def _bs_delta(S, K, T, r, sigma, opt_type):
     if T <= 0 or sigma <= 0:
@@ -10,27 +40,44 @@ def _bs_delta(S, K, T, r, sigma, opt_type):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     return norm.cdf(d1) if opt_type == "CE" else norm.cdf(d1) - 1
 
+
 def _span_margin(spot, lot_size, psr=0.065, exposure=0.03):
     return round(spot * lot_size * (psr + exposure), 2)
 
-def _margin_for_spread(sell_ltp, buy_ltp, sw_points, lot_size=75, spot=None):
-    """
-    sw_points : spread width in index POINTS (e.g. 200)
-    sell_ltp  : premium received per share (Rs)
-    buy_ltp   : premium paid per share (Rs)
 
-    net_credit  = (sell_ltp - buy_ltp) * lot_size          [Rs]
-    max_profit  = net_credit                                [Rs]
-    max_loss    = (sw_points - (sell_ltp - buy_ltp)) * lot_size  [Rs]
-                  i.e. spread width in Rs minus credit received
+def _margin_for_spread(sell_ltp, buy_ltp, sw_pts, lot_size=75, spot=None):
+    """
+    Compute spread P&L metrics.
+
+    Parameters
+    ----------
+    sell_ltp  : float  premium received  (Rs per share)
+    buy_ltp   : float  premium paid      (Rs per share)
+    sw_pts    : int    spread width in index POINTS
+                       For index options 1 point = Rs 1 per share
+    lot_size  : int    number of shares per lot
+    spot      : float  underlying spot price (for SPAN margin estimate)
+
+    Returns
+    -------
+    dict with:
+      credit_per_share  Rs/share collected
+      net_credit        Rs total collected  = credit_per_share * lot_size
+      max_profit        Rs = net_credit  (if both legs expire worthless)
+      max_loss          Rs = (sw_pts - credit_per_share) * lot_size
+                            (if spread fully breached)
+      credit_ratio      credit_per_share / sw_pts  (quality metric)
+      rr_ratio          max_profit / max_loss
     """
     sell_ltp = sell_ltp or 0.0
     buy_ltp  = buy_ltp  or 0.0
-    cps      = round(sell_ltp - buy_ltp, 2)          # credit per share (Rs)
-    nc       = round(cps * lot_size, 2)               # net credit (Rs)
-    mp       = nc                                     # max profit = net credit
-    ml       = round(max(sw_points - cps, 0) * lot_size, 2)  # max loss (Rs)
+    cps      = round(sell_ltp - buy_ltp, 2)           # credit per share (Rs)
+    nc       = round(cps * lot_size, 2)                # net credit (Rs)
+    mp       = nc                                      # max profit (Rs)
+    ml       = round(max(sw_pts - cps, 0) * lot_size, 2)  # max loss (Rs)
     peak     = _span_margin(spot, lot_size) if spot else ml
+    cr       = round(cps / sw_pts, 4) if sw_pts > 0 else 0
+    rr       = round(mp / ml, 4) if ml > 0 else 0
     return {
         "credit_per_share": cps,
         "net_credit":       nc,
@@ -38,11 +85,107 @@ def _margin_for_spread(sell_ltp, buy_ltp, sw_points, lot_size=75, spot=None):
         "max_loss":         ml,
         "margin_required":  ml,
         "peak_margin_est":  peak,
+        "credit_ratio":     cr,    # e.g. 0.25 means credit = 25% of spread
+        "rr_ratio":         rr,    # e.g. 0.33 means R:R = 1:3
     }
+
+
+def _find_best_spread(candidates, spot, strategy, sw, lot_size,
+                      target_delta, min_credit_ratio):
+    """
+    Find the best sell+buy pair that satisfies the minimum credit ratio.
+    Tries progressively wider spreads if the first attempt fails.
+
+    Returns (sell_candidate, buy_candidate, margin_info) or None.
+    """
+    if strategy == "BEAR_CALL":
+        # Sell: OTM call closest to target_delta
+        otm_sells = sorted(
+            [c for c in candidates if c["strike"] > spot],
+            key=lambda x: abs(x["ce_delta"] - target_delta),
+        )
+    else:  # BULL_PUT
+        # Sell: OTM put closest to target_delta
+        otm_sells = sorted(
+            [c for c in candidates if c["strike"] < spot],
+            key=lambda x: abs(abs(x["pe_delta"]) - target_delta),
+        )
+
+    if not otm_sells:
+        return None
+
+    # Try each sell candidate (closest delta first)
+    for sell in otm_sells[:5]:
+        if strategy == "BEAR_CALL":
+            # Buy leg: first strike >= sell + sw
+            buy_candidates = sorted(
+                [c for c in candidates if c["strike"] >= sell["strike"] + sw],
+                key=lambda x: x["strike"],
+            )
+            sell_ltp = sell["ce_ltp"]
+            buy_ltp_fn = lambda b: b["ce_ltp"]
+        else:
+            # Buy leg: first strike <= sell - sw
+            buy_candidates = sorted(
+                [c for c in candidates if c["strike"] <= sell["strike"] - sw],
+                key=lambda x: x["strike"], reverse=True,
+            )
+            sell_ltp = sell["pe_ltp"]
+            buy_ltp_fn = lambda b: b["pe_ltp"]
+
+        if not buy_candidates:
+            continue
+
+        buy = buy_candidates[0]
+        buy_ltp = buy_ltp_fn(buy)
+        m = _margin_for_spread(sell_ltp, buy_ltp, sw, lot_size, spot)
+
+        if m["credit_ratio"] >= min_credit_ratio:
+            return sell, buy, m
+
+        # Credit too low — log and try next sell strike
+        logging.debug(
+            f"{strategy}: sell={sell['strike']} credit_ratio={m['credit_ratio']:.2%} "
+            f"< min={min_credit_ratio:.2%}, trying next strike"
+        )
+
+    # No strike passed the ratio check — return best available with a warning
+    sell = otm_sells[0]
+    if strategy == "BEAR_CALL":
+        buy_candidates = sorted(
+            [c for c in candidates if c["strike"] >= sell["strike"] + sw],
+            key=lambda x: x["strike"],
+        )
+        sell_ltp = sell["ce_ltp"]
+        buy_ltp_fn = lambda b: b["ce_ltp"]
+    else:
+        buy_candidates = sorted(
+            [c for c in candidates if c["strike"] <= sell["strike"] - sw],
+            key=lambda x: x["strike"], reverse=True,
+        )
+        sell_ltp = sell["pe_ltp"]
+        buy_ltp_fn = lambda b: b["pe_ltp"]
+
+    if not buy_candidates:
+        return None
+
+    buy = buy_candidates[0]
+    m   = _margin_for_spread(sell_ltp, buy_ltp_fn(buy), sw, lot_size, spot)
+    logging.warning(
+        f"{strategy}: best available credit_ratio={m['credit_ratio']:.2%} "
+        f"(below min {min_credit_ratio:.2%}). "
+        f"R:R={m['rr_ratio']:.2f}  MaxProfit=Rs{m['max_profit']:,.0f}  "
+        f"MaxLoss=Rs{m['max_loss']:,.0f}. "
+        f"Consider raising TARGET_DELTA or lowering SPREAD_WIDTH_POINTS."
+    )
+    return sell, buy, m
+
 
 def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
                    lot_size=75, spread_width=None):
-    sw = int(spread_width) if spread_width is not None else SPREAD_WIDTH
+    sw  = int(spread_width) if spread_width is not None else SPREAD_WIDTH
+    mcr = MIN_CREDIT_RATIO
+
     candidates = []
     for row in chain:
         K   = row["strikePrice"]
@@ -64,49 +207,23 @@ def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
     if not candidates:
         return []
 
-    if strategy == "BEAR_CALL":
-        otm = sorted(
-            [c for c in candidates if c["strike"] > spot],
-            key=lambda x: abs(x["ce_delta"] - target_delta),
-        )
-        if not otm:
+    if strategy in ("BEAR_CALL", "BULL_PUT"):
+        result = _find_best_spread(candidates, spot, strategy, sw,
+                                   lot_size, target_delta, mcr)
+        if result is None:
             return []
-        sell = otm[0]
-        buys = sorted(
-            [c for c in candidates if c["strike"] >= sell["strike"] + sw],
-            key=lambda x: x["strike"],
-        )
-        if not buys:
-            logging.warning(f"BEAR_CALL: no buy leg {sw}pts above {sell['strike']}")
-            return []
-        buy = buys[0]
-        m = _margin_for_spread(sell["ce_ltp"], buy["ce_ltp"], sw, lot_size, spot)
-        return [
-            ("SELL", sell["strike"], "CE", sell["ce_sym"], sell["ce_ltp"], m),
-            ("BUY",  buy["strike"],  "CE", buy["ce_sym"],  buy["ce_ltp"],  m),
-        ]
+        sell, buy, m = result
 
-    elif strategy == "BULL_PUT":
-        otm = sorted(
-            [c for c in candidates if c["strike"] < spot],
-            key=lambda x: abs(abs(x["pe_delta"]) - target_delta),
-        )
-        if not otm:
-            return []
-        sell = otm[0]
-        buys = sorted(
-            [c for c in candidates if c["strike"] <= sell["strike"] - sw],
-            key=lambda x: x["strike"], reverse=True,
-        )
-        if not buys:
-            logging.warning(f"BULL_PUT: no buy leg {sw}pts below {sell['strike']}")
-            return []
-        buy = buys[0]
-        m = _margin_for_spread(sell["pe_ltp"], buy["pe_ltp"], sw, lot_size, spot)
-        return [
-            ("SELL", sell["strike"], "PE", sell["pe_sym"], sell["pe_ltp"], m),
-            ("BUY",  buy["strike"],  "PE", buy["pe_sym"],  buy["pe_ltp"],  m),
-        ]
+        if strategy == "BEAR_CALL":
+            return [
+                ("SELL", sell["strike"], "CE", sell["ce_sym"], sell["ce_ltp"], m),
+                ("BUY",  buy["strike"],  "CE", buy["ce_sym"],  buy["ce_ltp"],  m),
+            ]
+        else:
+            return [
+                ("SELL", sell["strike"], "PE", sell["pe_sym"], sell["pe_ltp"], m),
+                ("BUY",  buy["strike"],  "PE", buy["pe_sym"],  buy["pe_ltp"],  m),
+            ]
 
     elif strategy == "IRON_CONDOR":
         bl = select_strikes(chain, spot, "BEAR_CALL", T, r, target_delta, lot_size, sw)
@@ -114,12 +231,13 @@ def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
         if not bl or not pl:
             return []
         bm, pm = bl[0][5], pl[0][5]
-        # Iron condor: collect credit from both spreads
-        # Max profit = total net credit
-        # Max loss   = max of either spread's max loss (only one side can be breached)
+        # Iron condor:
+        #   max_profit = sum of both credits (collect from both sides)
+        #   max_loss   = max of either spread's loss (only one side breached at a time)
         nc = round(bm["net_credit"] + pm["net_credit"], 2)
         ml = round(max(bm["max_loss"], pm["max_loss"]), 2)
         pk = round(bm["peak_margin_est"] + pm["peak_margin_est"], 2)
+        cr = round(nc / (ml + nc) if (ml + nc) > 0 else 0, 4)
         cm = {
             "credit_per_share": round(bm["credit_per_share"] + pm["credit_per_share"], 2),
             "net_credit":       nc,
@@ -127,6 +245,8 @@ def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
             "max_loss":         ml,
             "margin_required":  ml,
             "peak_margin_est":  pk,
+            "credit_ratio":     cr,
+            "rr_ratio":         round(nc / ml, 4) if ml > 0 else 0,
         }
         return [(l[0], l[1], l[2], l[3], l[4], cm) for l in bl + pl]
 

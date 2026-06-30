@@ -1,9 +1,8 @@
-"""Application configuration — all values from .env with safe defaults."""
+﻿"""Application configuration — all values from .env with safe defaults."""
 from __future__ import annotations
 import json, os
 from dataclasses import dataclass
 from datetime import time
-from typing import Any
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
@@ -41,6 +40,7 @@ class Settings:
     active_indices: tuple
     poll_interval_seconds: int; trade_cooldown_seconds: int; max_trades_per_day: int
     stop_loss: float; target_profit: float; target_delta: float
+    min_credit_ratio: float          # NEW: min credit/spread ratio (e.g. 0.25 = 25%)
     delta_hedge_threshold: float; risk_free_rate: float
     fallback_time_to_expiry_years: float; min_time_to_expiry_days: float
     spread_width_points: int; price_scan_range: float; exposure_margin_rate: float
@@ -71,6 +71,11 @@ def load_settings():
         stop_loss=_get_float("STOP_LOSS",-1500.0),
         target_profit=_get_float("TARGET_PROFIT",1000.0),
         target_delta=_get_float("TARGET_DELTA",0.30),
+        # NEW: minimum credit-to-spread ratio for trade quality
+        # 0.25 = credit must be >= 25% of spread width
+        # e.g. 200pt spread needs >= Rs50/share credit
+        # This ensures R:R is at least 1:3 (profit:loss)
+        min_credit_ratio=_get_float("MIN_CREDIT_RATIO", 0.25),
         delta_hedge_threshold=_get_float("DELTA_HEDGE_THRESHOLD",0.05),
         risk_free_rate=_get_float("RISK_FREE_RATE",0.06),
         fallback_time_to_expiry_years=_get_float("FALLBACK_TIME_TO_EXPIRY_YEARS",0.1),
@@ -83,8 +88,8 @@ def load_settings():
         min_oi=_get_int("MIN_OI",1),
         oi_score_window_points=_get_int("OI_SCORE_WINDOW_POINTS",300),
         oi_score_normalizer=_get_float("OI_SCORE_NORMALIZER",100000.0),
-        market_open_time=_get_time("MARKET_OPEN_TIME","09:20"),
-        market_close_time=_get_time("MARKET_CLOSE_TIME","15:15"),
+        market_open_time=_get_time("MARKET_OPEN_TIME","09:15"),
+        market_close_time=_get_time("MARKET_CLOSE_TIME","15:30"),
         log_file=os.getenv("LOG_FILE","trading_bot.log"),
         redis_url=os.getenv("REDIS_URL","redis://localhost:6379"),
         model_path=os.path.join(os.path.dirname(__file__), "..", os.getenv("MODEL_PATH","models/xgb.pkl")),
