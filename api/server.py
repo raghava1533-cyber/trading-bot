@@ -1,8 +1,9 @@
 ﻿"""
-api/server.py  -  FastAPI backend for Render deployment
+api/server.py  -  FastAPI backend for Render FREE tier deployment
 Exposes bot state via REST + WebSocket. Runs bot as background task.
+Keep-alive: UptimeRobot pings /ping every 5 min to prevent free tier sleep.
 """
-import asyncio, json, logging, os, sys
+import asyncio, datetime as _dt, json, logging, os, sys
 from contextlib import asynccontextmanager
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
@@ -16,6 +17,7 @@ logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=lo
 log = logging.getLogger(__name__)
 
 
+# ── WebSocket manager ─────────────────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
@@ -42,6 +44,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ── State builder ─────────────────────────────────────────────────────────────
 def _build_state_payload() -> dict:
     try:
         from config import SETTINGS
@@ -71,9 +74,7 @@ def _build_state_payload() -> dict:
     if last_update:
         state["last_update"] = last_update
 
-    # Trade history
     try:
-        import tempfile
         from execution.paper_engine import load_trade_history
         state["trade_history"] = load_trade_history()
     except Exception:
@@ -82,6 +83,7 @@ def _build_state_payload() -> dict:
     return state
 
 
+# ── Background tasks ──────────────────────────────────────────────────────────
 async def _run_bot():
     try:
         from main_async import main as bot_main
@@ -101,6 +103,7 @@ async def _broadcast_loop():
         await asyncio.sleep(1)
 
 
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.getenv("BOT_ENABLED", "true").lower() == "true":
@@ -109,31 +112,53 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# ── App + CORS ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Trading Bot API", version="2.0.0", lifespan=lifespan)
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
+# Allow configured frontend + localhost for dev
+_origins = ["*"] if FRONTEND_URL == "*" else [
+    FRONTEND_URL,
+    "http://localhost:3000",
+    "http://localhost:8501",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL] if FRONTEND_URL != "*" else ["*"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ── REST endpoints ────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
+    """Render health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/ping")
+def ping():
+    """
+    Keep-alive endpoint for UptimeRobot (prevents Render free tier sleeping).
+    Setup: https://uptimerobot.com → New Monitor → HTTP(s)
+    URL:   https://trading-bot-api.onrender.com/ping
+    Interval: every 5 minutes (free UptimeRobot account)
+    """
+    return {"pong": True, "time": _dt.datetime.utcnow().isoformat() + "Z"}
 
 
 @app.get("/state")
 def get_state():
+    """Full bot state for all active indices."""
     return _build_state_payload()
 
 
 @app.get("/state/{index}")
 def get_index_state(index: str):
-    idx = index.upper()
+    """Bot state for a single index."""
+    idx        = index.upper()
     pnl_raw    = get_data(f"pnl_{idx}")
     spot_raw   = get_data(f"spot_{idx}")
     regime_raw = get_data(f"regime_{idx}")
@@ -147,6 +172,7 @@ def get_index_state(index: str):
 
 @app.get("/history")
 def get_history():
+    """Full trade history."""
     try:
         from execution.paper_engine import load_trade_history
         return {"trades": load_trade_history()}
@@ -154,6 +180,13 @@ def get_history():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/all_state")
+def get_all_state():
+    """Return every key in the state store (debug)."""
+    return get_all_data()
+
+
+# ── Close command ─────────────────────────────────────────────────────────────
 class CloseCmd(BaseModel):
     index: str
     action: str = "close_all"
@@ -162,8 +195,8 @@ class CloseCmd(BaseModel):
 
 @app.post("/close")
 def close_position(cmd: CloseCmd):
-    """Send a close command to the bot via state file."""
-    import tempfile, os
+    """Queue a close command for the bot (picked up next cycle)."""
+    import tempfile
     STATE_FILE = os.path.join(tempfile.gettempdir(), "trading_bot_state.json")
     try:
         data = {}
@@ -173,8 +206,11 @@ def close_position(cmd: CloseCmd):
         cmds = data.get("close_commands", [])
         if isinstance(cmds, str):
             cmds = json.loads(cmds)
-        cmds.append({"index": cmd.index.upper(), "action": cmd.action,
-                     "position_index": cmd.position_index})
+        cmds.append({
+            "index":          cmd.index.upper(),
+            "action":         cmd.action,
+            "position_index": cmd.position_index,
+        })
         data["close_commands"] = cmds
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -183,6 +219,7 @@ def close_position(cmd: CloseCmd):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── WebSocket ─────────────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)

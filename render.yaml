@@ -1,42 +1,47 @@
-﻿# render.yaml  -  Render Blueprint
-# Connect this repo in Render dashboard -> New -> Blueprint
-# Docs: https://render.com/docs/blueprint-spec
+﻿# render.yaml  -  Render Blueprint  (100% FREE setup)
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1: Go to https://render.com → New → Blueprint
+# Step 2: Connect repo: raghava1533-cyber/trading-bot
+# Step 3: Render reads this file and creates both services automatically
+# Step 4: Set secret env vars in Render dashboard (UPSTOX_ACCESS_TOKEN etc.)
+# ─────────────────────────────────────────────────────────────────────────────
 
 services:
+  # ── 1. FastAPI Web Service (API + Bot) ──────────────────────────────────────
   - type: web
     name: trading-bot-api
     runtime: python
-    region: singapore
-    plan: starter              # $7/mo - always-on (free tier sleeps)
+    region: singapore          # closest to NSE/BSE
+    plan: free                 # FREE tier — kept alive by /health ping (UptimeRobot)
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
 
     envVars:
-      # ── Upstox (set values in Render dashboard, NOT here) ──────────────────
+      # ── Upstox credentials — set in Render dashboard as SECRETS ────────────
       - key: UPSTOX_ACCESS_TOKEN
-        sync: false            # SECRET - fill in Render dashboard
+        sync: false
       - key: UPSTOX_API_KEY
         sync: false
       - key: UPSTOX_API_SECRET
         sync: false
 
-      # ── Redis (auto-injected from addon below) ─────────────────────────────
+      # ── Redis — auto-injected from the Redis service below ─────────────────
       - key: REDIS_URL
         fromService:
           name: trading-bot-redis
           type: redis
           property: connectionString
 
-      # ── Frontend CORS (update after Vercel deploy) ─────────────────────────
+      # ── CORS — set to your Vercel URL after deploying frontend ─────────────
       - key: FRONTEND_URL
-        value: https://your-app.vercel.app   # <- replace with your Vercel URL
+        value: https://your-app.vercel.app
 
-      # ── Bot settings ───────────────────────────────────────────────────────
+      # ── Bot behaviour ───────────────────────────────────────────────────────
       - key: BOT_ENABLED
         value: "true"
       - key: DRY_RUN
-        value: "true"          # set false for live trading
+        value: "true"
       - key: ACTIVE_INDICES
         value: "NIFTY"
       - key: STOP_LOSS
@@ -57,13 +62,12 @@ services:
         value: "900"
       - key: CARRY_WIN_RATE_THRESHOLD
         value: "0.55"
-
-      # ── Python path ────────────────────────────────────────────────────────
       - key: PYTHONPATH
         value: ./core
 
+  # ── 2. Redis (FREE) ─────────────────────────────────────────────────────────
   - type: redis
     name: trading-bot-redis
     region: singapore
-    plan: free
+    plan: free                 # FREE — 25 MB, sufficient for bot state
     maxmemoryPolicy: allkeys-lru
