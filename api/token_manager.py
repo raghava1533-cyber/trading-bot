@@ -7,7 +7,7 @@ HOW IT WORKS (zero manual work after first setup):
   1. Bot starts → checks if token in Redis is valid
   2. If valid → use it, done
   3. If expired → bot logs warning, keeps retrying
-  4. You open: https://your-render-url.onrender.com/auth
+  4. You open: https://trading-bot-av9x.onrender.com/auth
   5. Click "Login with Upstox" → Upstox login page
   6. After login, Upstox redirects to /auth/callback?code=...
   7. Server exchanges code for token → saves to Redis
@@ -34,7 +34,7 @@ TOKEN_REDIS_KEY = "upstox_access_token"
 def get_api_key()      -> str: return os.getenv("UPSTOX_API_KEY", "").strip()
 def get_api_secret()   -> str: return os.getenv("UPSTOX_API_SECRET", "").strip()
 def get_redirect_uri() -> str:
-    # On Render: https://trading-bot-api.onrender.com/auth/callback
+    # On Render: https://trading-bot-av9x.onrender.com/auth/callback
     base = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
     if not base:
         base = os.getenv("FRONTEND_URL", "http://localhost:8000").strip().rstrip("/")

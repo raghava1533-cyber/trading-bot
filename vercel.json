@@ -6,10 +6,10 @@
   "rewrites": [
     {
       "source": "/api/bot/:path*",
-      "destination": "https://trading-bot-api.onrender.com/:path*"
+      "destination": "https://trading-bot-av9x.onrender.com/:path*"
     }
   ],
   "env": {
-    "NEXT_PUBLIC_API_URL": "https://trading-bot-api.onrender.com"
+    "NEXT_PUBLIC_API_URL": "https://trading-bot-av9x.onrender.com"
   }
 }

@@ -4,12 +4,12 @@
 #   1. render.com → New → Blueprint → connect repo raghava1533-cyber/trading-bot
 #   2. Render reads this file and creates both services automatically
 #   3. Set UPSTOX_API_KEY and UPSTOX_API_SECRET as secrets in dashboard
-#   4. Set UPSTOX_REDIRECT_URI = https://trading-bot-api.onrender.com/auth/callback
+#   4. Set UPSTOX_REDIRECT_URI = https://trading-bot-av9x.onrender.com/auth/callback
 #      in your Upstox Developer Portal app settings
 #   5. Deploy Vercel frontend, then update FRONTEND_URL here
 #
 # DAILY TOKEN REFRESH (10 seconds):
-#   Open https://trading-bot-api.onrender.com/auth in browser
+#   Open https://trading-bot-av9x.onrender.com/auth in browser
 #   Click "Login with Upstox" → token saves automatically to Redis
 #   No Render dashboard, no env var changes, no redeploy needed
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ services:
 
       # ── Render auto-sets this — used to build /auth/callback URL ────────────
       - key: RENDER_EXTERNAL_URL
-        value: https://trading-bot-api.onrender.com   # Render sets this automatically
+        value: https://trading-bot-av9x.onrender.com   # Render sets this automatically
 
       # ── Redis — auto-injected from the Redis service below ──────────────────
       - key: REDIS_URL
@@ -45,7 +45,7 @@ services:
 
       # ── CORS — update to your Vercel URL after frontend deploy ──────────────
       - key: FRONTEND_URL
-        value: https://your-app.vercel.app
+        value: https://trading-bot-seven-tawny.vercel.app
 
       # ── Bot settings ─────────────────────────────────────────────────────────
       - key: BOT_ENABLED

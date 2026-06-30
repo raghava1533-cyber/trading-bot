@@ -136,18 +136,19 @@ async def lifespan(app: FastAPI):
 # ── App + CORS ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Trading Bot API", version="2.0.0", lifespan=lifespan)
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+RENDER_URL   = "https://trading-bot-av9x.onrender.com"
+VERCEL_URL   = os.getenv("FRONTEND_URL", "https://trading-bot-seven-tawny.vercel.app").strip().rstrip("/")
 _origins = [
+    VERCEL_URL,
+    "https://trading-bot-seven-tawny.vercel.app",
     "http://localhost:3000",
     "http://localhost:8501",
     "http://localhost:8000",
 ]
-if FRONTEND_URL:
-    _origins.append(FRONTEND_URL)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://trading-bot-seven-tawny.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -255,7 +256,7 @@ _ERROR_HTML = """<!DOCTYPE html>
 def auth_page():
     """
     Open this in your browser each morning to refresh the Upstox token.
-    URL: https://trading-bot-api.onrender.com/auth
+    URL: https://trading-bot-av9x.onrender.com/auth
     """
     from api.token_manager import get_stored_token, check_token_valid, get_login_url
     token = get_stored_token()

@@ -47,7 +47,7 @@ def _load_token() -> str:
         return t
     raise RuntimeError(
         "No Upstox token found. "
-        "Open https://your-render-url.onrender.com/auth to login."
+        "Open https://trading-bot-av9x.onrender.com/auth to login."
     )
 
 

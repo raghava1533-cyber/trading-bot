@@ -71,10 +71,10 @@ All other settings are already in render.yaml (BOT_ENABLED, DRY_RUN, etc.)
 
 ### 2d. Get your Render URL
 After deploy, your API URL will be:
-`https://trading-bot-api.onrender.com`
+`https://trading-bot-av9x.onrender.com`
 
 Test it:
-- Open browser: `https://trading-bot-api.onrender.com/health`
+- Open browser: `https://trading-bot-av9x.onrender.com/health`
 - Should show: `{"status":"ok"}`
 
 ---
@@ -102,7 +102,7 @@ Still on the deploy screen, expand **Environment Variables**:
 
 | Name | Value |
 |------|-------|
-| `NEXT_PUBLIC_API_URL` | `https://trading-bot-api.onrender.com` |
+| `NEXT_PUBLIC_API_URL` | `https://trading-bot-av9x.onrender.com` |
 
 Click **Add**
 
@@ -137,7 +137,7 @@ UptimeRobot pings your server every 5 min to keep it awake.
 2. Fill in:
    - Monitor Type: **HTTP(s)**
    - Friendly Name: `Trading Bot API`
-   - URL: `https://trading-bot-api.onrender.com/ping`
+   - URL: `https://trading-bot-av9x.onrender.com/ping`
    - Monitoring Interval: **5 minutes**
 3. Click **Create Monitor**
 
@@ -152,13 +152,13 @@ Your Render service will NEVER sleep during market hours.
 Open these URLs in your browser:
 
 ```
-https://trading-bot-api.onrender.com/health
+https://trading-bot-av9x.onrender.com/health
 → {"status":"ok"}
 
-https://trading-bot-api.onrender.com/ping
+https://trading-bot-av9x.onrender.com/ping
 → {"pong":true,"time":"2026-06-30T..."}
 
-https://trading-bot-api.onrender.com/state
+https://trading-bot-av9x.onrender.com/state
 → {"indices":{"NIFTY":{"pnl":null,"spot":null,"regime":null}},...}
 ```
 
@@ -269,7 +269,7 @@ Check Render logs for error. Common causes:
 
 ### Render sleeping despite UptimeRobot
 - Check UptimeRobot monitor is active (green)
-- Verify URL is exactly: `https://trading-bot-api.onrender.com/ping`
+- Verify URL is exactly: `https://trading-bot-av9x.onrender.com/ping`
 - Check UptimeRobot logs — should show 200 OK every 5 min
 
 ### "Token invalid (HTTP 401)" in Render logs
@@ -282,9 +282,9 @@ Check Render logs for error. Common causes:
 ## Quick Reference
 
 ```
-Render API URL:    https://trading-bot-api.onrender.com
+Render API URL:    https://trading-bot-av9x.onrender.com
 Vercel UI URL:     https://your-app.vercel.app
-UptimeRobot ping:  https://trading-bot-api.onrender.com/ping
+UptimeRobot ping:  https://trading-bot-av9x.onrender.com/ping
 
 Local bot:         python core/main_async.py
 Local dashboard:   http://localhost:8501
@@ -305,16 +305,16 @@ UptimeRobot:       https://uptimerobot.com/dashboard
 2. Render:
    a. render.com → New → Blueprint → connect repo
    b. Set UPSTOX_ACCESS_TOKEN, UPSTOX_API_KEY, UPSTOX_API_SECRET as secrets
-   c. Copy your Render URL: https://trading-bot-api.onrender.com
+   c. Copy your Render URL: https://trading-bot-av9x.onrender.com
 3. Vercel:
    a. vercel.com → New Project → import repo
    b. Root Directory = frontend
-   c. NEXT_PUBLIC_API_URL = https://trading-bot-api.onrender.com
+   c. NEXT_PUBLIC_API_URL = https://trading-bot-av9x.onrender.com
    d. Deploy → copy your Vercel URL
 4. Back in Render: set FRONTEND_URL = your Vercel URL → Save
 5. UptimeRobot:
    a. uptimerobot.com → Add Monitor → HTTP(s)
-   b. URL = https://trading-bot-api.onrender.com/ping
+   b. URL = https://trading-bot-av9x.onrender.com/ping
    c. Interval = 5 minutes
 6. Done! Total cost: Rs 0
 ```
