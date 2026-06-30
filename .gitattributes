@@ -1,1 +1,26 @@
+# Force LF line endings for all text files (prevents CRLF on Windows checkout)
+* text=auto eol=lf
+
+# Explicitly LF for source files
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.css  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.py   text eol=lf
+*.txt  text eol=lf
+*.html text eol=lf
+
+# Binary - no line ending conversion
+*.dll  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+
+# LFS
 .venv/Lib/site-packages/xgboost/lib/xgboost.dll filter=lfs diff=lfs merge=lfs -text
