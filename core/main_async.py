@@ -138,13 +138,35 @@ def _should_carry_position(pos: dict) -> bool:
     return True
 
 
-# ── Step 1: Auto-authenticate ─────────────────────────────────────────────────
+# ── Step 1: Token check (loads from Redis or env var) ─────────────────────────
 def auto_authenticate() -> bool:
-    import requests, re
+    """
+    Check if a valid Upstox token is available.
+    On Render: token is stored in Redis after user visits /auth
+    Locally:   token is in core/.env as UPSTOX_ACCESS_TOKEN
+    """
+    import requests
     from dotenv import load_dotenv
     _env = os.path.join(os.path.dirname(__file__), ".env")
     load_dotenv(_env, override=True)
-    token = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
+
+    # 1. Try Redis first (set by /auth/callback on Render)
+    token = None
+    try:
+        from infra.redis_bus import get_data
+        t = get_data("upstox_access_token")
+        if t and len(t) > 20:
+            token = t
+            os.environ["UPSTOX_ACCESS_TOKEN"] = t
+            log("Token loaded from Redis")
+    except Exception:
+        pass
+
+    # 2. Fallback to env var
+    if not token:
+        token = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
+
+    # 3. Validate token
     if token and len(token) > 20:
         try:
             resp = requests.get(
@@ -159,51 +181,49 @@ def auto_authenticate() -> bool:
             log(f"Token invalid (HTTP {resp.status_code})", logging.WARNING)
         except Exception as exc:
             log(f"Token check failed: {exc}", logging.WARNING)
-    api_key      = os.getenv("UPSTOX_API_KEY", "").strip()
-    api_secret   = os.getenv("UPSTOX_API_SECRET", "").strip()
-    redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1").strip()
-    auth_code    = os.getenv("UPSTOX_AUTH_CODE", "").strip()
-    bad = ("", "your_api_key_here", "your_secret_key_here", "paste_auth_code_here", "your_token_here")
-    if api_key in bad or api_secret in bad:
-        log("UPSTOX_API_KEY / UPSTOX_API_SECRET not set in .env", logging.ERROR)
-        return False
-    if not auth_code or auth_code in bad:
-        from urllib.parse import urlencode
-        params = {"response_type": "code", "client_id": api_key, "redirect_uri": redirect_uri}
-        log("Access token expired. Run:  python core/broker/auth.py", logging.WARNING)
-        log(f"Or open: https://api.upstox.com/v2/login/authorization/dialog?{urlencode(params)}", logging.WARNING)
-        return False
-    log("Exchanging auth code for access token...")
-    try:
-        resp = requests.post(
-            "https://api.upstox.com/v2/login/authorization/token",
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-            data={"code": auth_code, "client_id": api_key, "client_secret": api_secret,
-                  "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            log(f"Token exchange failed: {resp.status_code}", logging.ERROR)
-            return False
-        new_token = resp.json().get("access_token", "")
-        if not new_token:
-            log("No access_token in response", logging.ERROR)
-            return False
-        content = open(_env, "r", encoding="utf-8").read()
-        new_line = f"UPSTOX_ACCESS_TOKEN={new_token}"
-        if re.search(r"^UPSTOX_ACCESS_TOKEN=.*$", content, re.MULTILINE):
-            content = re.sub(r"^UPSTOX_ACCESS_TOKEN=.*$", new_line, content, re.MULTILINE)
-        else:
-            content = content.rstrip("\n") + f"\n{new_line}\n"
-        content = re.sub(r"^UPSTOX_AUTH_CODE=.*$", "UPSTOX_AUTH_CODE=", content, flags=re.MULTILINE)
-        with open(_env, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
-        os.environ["UPSTOX_ACCESS_TOKEN"] = new_token
-        log("New access token saved to .env")
-        return True
-    except Exception as exc:
-        log(f"Token exchange error: {exc}", logging.ERROR)
-        return False
+
+    # 4. Token missing or expired
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+    if render_url:
+        log("=" * 60, logging.WARNING)
+        log("TOKEN EXPIRED — Open this URL in your browser to refresh:", logging.WARNING)
+        log(f"  {render_url}/auth", logging.WARNING)
+        log("Takes 10 seconds. Bot will resume automatically.", logging.WARNING)
+        log("=" * 60, logging.WARNING)
+    else:
+        log("TOKEN EXPIRED — Run:  python core/broker/auth.py", logging.WARNING)
+    return False
+
+
+async def wait_for_valid_token(max_wait_minutes: int = 30) -> bool:
+    """
+    Wait for a valid token to appear in Redis (user visits /auth).
+    Called when token is expired at startup or during trading day.
+    Checks every 30 seconds for up to max_wait_minutes.
+    """
+    import requests
+    log(f"Waiting up to {max_wait_minutes} min for token refresh via /auth...")
+    for _ in range(max_wait_minutes * 2):   # check every 30s
+        await asyncio.sleep(30)
+        try:
+            from infra.redis_bus import get_data
+            t = get_data("upstox_access_token")
+            if t and len(t) > 20:
+                resp = requests.get(
+                    "https://api.upstox.com/v2/user/profile",
+                    headers={"Authorization": f"Bearer {t}", "Accept": "application/json"},
+                    timeout=8,
+                )
+                if resp.status_code == 200:
+                    os.environ["UPSTOX_ACCESS_TOKEN"] = t
+                    name = resp.json().get("data", {}).get("user_name", "")
+                    log(f"Token refreshed! Logged in as: {name or 'Upstox User'}")
+                    return True
+        except Exception:
+            pass
+        log("Still waiting for token refresh...", logging.WARNING)
+    log("Token refresh timeout. Bot stopping.", logging.ERROR)
+    return False
 
 
 # ── Step 2: Launch dashboard ──────────────────────────────────────────────────
@@ -540,8 +560,12 @@ async def main():
     log("=" * 60)
     log("Step 1/4: Checking Upstox authentication...")
     if not auto_authenticate():
-        log("Authentication failed. Run:  python core/broker/auth.py", logging.ERROR)
-        sys.exit(1)
+        log("Token expired — waiting for refresh via /auth endpoint...", logging.WARNING)
+        refreshed = await wait_for_valid_token(max_wait_minutes=30)
+        if not refreshed:
+            log("Authentication failed after 30 min wait.", logging.ERROR)
+            log("Open /auth in browser or run: python core/broker/auth.py", logging.ERROR)
+            sys.exit(1)
     log("Step 2/4: Launching dashboard...")
     dash_proc = launch_dashboard()
     if dash_proc:
@@ -592,3 +616,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log("Bot stopped by user.")
+
+

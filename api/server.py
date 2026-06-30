@@ -1,7 +1,17 @@
 ﻿"""
-api/server.py  -  FastAPI backend for Render FREE tier deployment
-Exposes bot state via REST + WebSocket. Runs bot as background task.
-Keep-alive: UptimeRobot pings /ping every 5 min to prevent free tier sleep.
+api/server.py  -  FastAPI backend for Render FREE tier
+────────────────────────────────────────────────────────
+Endpoints:
+  GET  /health          Render health check
+  GET  /ping            UptimeRobot keep-alive
+  GET  /auth            Open in browser → Upstox login page
+  GET  /auth/callback   Upstox redirects here after login → saves token
+  GET  /auth/status     Check if token is valid right now
+  GET  /state           Full bot state (all indices)
+  GET  /state/{index}   Single index state
+  GET  /history         Trade history
+  POST /close           Queue close command
+  WS   /ws              WebSocket live feed
 """
 import asyncio, datetime as _dt, json, logging, os, sys
 from contextlib import asynccontextmanager
@@ -10,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from infra.redis_bus import get_data, get_all_data, set_data
 
@@ -106,6 +117,16 @@ async def _broadcast_loop():
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Load token from Redis into env on startup
+    try:
+        from api.token_manager import get_stored_token
+        t = get_stored_token()
+        if t:
+            os.environ["UPSTOX_ACCESS_TOKEN"] = t
+            log.info("Loaded Upstox token from Redis on startup")
+    except Exception:
+        pass
+
     if os.getenv("BOT_ENABLED", "true").lower() == "true":
         asyncio.create_task(_run_bot())
     asyncio.create_task(_broadcast_loop())
@@ -116,7 +137,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trading Bot API", version="2.0.0", lifespan=lifespan)
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
-# Allow configured frontend + localhost for dev
 _origins = ["*"] if FRONTEND_URL == "*" else [
     FRONTEND_URL,
     "http://localhost:3000",
@@ -131,33 +151,182 @@ app.add_middleware(
 )
 
 
-# ── REST endpoints ────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTH ENDPOINTS — open /auth in browser to refresh token daily
+# ═════════════════════════════════════════════════════════════════════════════
+
+_AUTH_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <title>Upstox Token Refresh</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{background:#0f1117;color:#e2e8f0;font-family:system-ui,sans-serif;
+          display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}}
+    .card{{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
+           padding:40px;max-width:480px;width:100%;text-align:center}}
+    h1{{font-size:1.5rem;margin-bottom:8px;color:#63b3ed}}
+    .status{{font-size:0.9rem;padding:10px 16px;border-radius:8px;margin:16px 0}}
+    .ok{{background:#1c4532;color:#68d391;border:1px solid #276749}}
+    .expired{{background:#742a2a;color:#fc8181;border:1px solid #9b2c2c}}
+    .btn{{display:inline-block;background:#3182ce;color:white;padding:14px 32px;
+          border-radius:10px;text-decoration:none;font-weight:700;font-size:1rem;
+          margin-top:20px;transition:background 0.2s}}
+    .btn:hover{{background:#2b6cb0}}
+    .note{{font-size:0.8rem;color:#718096;margin-top:16px;line-height:1.5}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>📈 Upstox Token Refresh</h1>
+  <p style="color:#a0aec0;margin-top:4px">Trading Bot — Daily Auth</p>
+  <div class="status {status_class}">{status_msg}</div>
+  <a href="{login_url}" class="btn">🔐 Login with Upstox</a>
+  <p class="note">
+    Click the button → Login with your Upstox credentials<br>
+    Token saves automatically — takes about 10 seconds<br>
+    Do this once each morning before 9:15 AM IST
+  </p>
+</div>
+</body>
+</html>"""
+
+_SUCCESS_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <title>Token Saved</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{background:#0f1117;color:#e2e8f0;font-family:system-ui,sans-serif;
+          display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}}
+    .card{{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
+           padding:40px;max-width:480px;width:100%;text-align:center}}
+    h1{{font-size:1.5rem;color:#68d391;margin-bottom:12px}}
+    .tick{{font-size:4rem;margin-bottom:16px}}
+    p{{color:#a0aec0;line-height:1.6;margin-top:8px}}
+    .token{{font-family:monospace;font-size:0.8rem;color:#63b3ed;
+            background:#1e2535;padding:8px 12px;border-radius:6px;
+            margin:12px 0;word-break:break-all}}
+    .note{{font-size:0.8rem;color:#718096;margin-top:16px}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="tick">✅</div>
+  <h1>Token Saved!</h1>
+  <p>Your Upstox access token has been saved to Redis.</p>
+  <div class="token">{token_preview}...</div>
+  <p>The bot will pick up the new token within 60 seconds.</p>
+  <p class="note">You can close this tab. See you tomorrow! 🙏</p>
+</div>
+</body>
+</html>"""
+
+_ERROR_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <title>Auth Error</title>
+  <style>
+    body{{background:#0f1117;color:#e2e8f0;font-family:system-ui,sans-serif;
+          display:flex;align-items:center;justify-content:center;min-height:100vh}}
+    .card{{background:#1a1f2e;border:1px solid #742a2a;border-radius:16px;
+           padding:40px;max-width:480px;text-align:center}}
+    h1{{color:#fc8181}} pre{{background:#141824;padding:12px;border-radius:8px;
+    font-size:0.8rem;text-align:left;overflow-x:auto;margin-top:12px}}
+    a{{color:#63b3ed}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>❌ Auth Error</h1>
+  <pre>{error}</pre>
+  <p style="margin-top:16px"><a href="/auth">← Try again</a></p>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/auth", response_class=HTMLResponse)
+def auth_page():
+    """
+    Open this in your browser each morning to refresh the Upstox token.
+    URL: https://trading-bot-api.onrender.com/auth
+    """
+    from api.token_manager import get_stored_token, check_token_valid, get_login_url
+    token = get_stored_token()
+    valid = check_token_valid(token) if token else False
+    if valid:
+        status_class = "ok"
+        status_msg   = "✅ Token is valid — bot is running"
+    else:
+        status_class = "expired"
+        status_msg   = "⚠️ Token expired — please login below"
+    return _AUTH_HTML.format(
+        status_class=status_class,
+        status_msg=status_msg,
+        login_url=get_login_url(),
+    )
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def auth_callback(code: str = "", error: str = ""):
+    """
+    Upstox redirects here after login with ?code=...
+    Exchanges code for token and saves to Redis.
+    """
+    from api.token_manager import exchange_code, save_token
+    if error:
+        return HTMLResponse(_ERROR_HTML.format(error=f"Upstox error: {error}"), status_code=400)
+    if not code:
+        return HTMLResponse(_ERROR_HTML.format(error="No auth code received from Upstox"), status_code=400)
+    try:
+        token = exchange_code(code)
+        save_token(token)
+        log.info(f"New Upstox token saved via /auth/callback ({token[:20]}...)")
+        return _SUCCESS_HTML.format(token_preview=token[:40])
+    except Exception as exc:
+        log.error(f"Auth callback error: {exc}")
+        return HTMLResponse(_ERROR_HTML.format(error=str(exc)), status_code=500)
+
+
+@app.get("/auth/status")
+def auth_status():
+    """Check if the current token is valid."""
+    from api.token_manager import get_stored_token, check_token_valid
+    token = get_stored_token()
+    valid = check_token_valid(token) if token else False
+    return {
+        "token_valid":   valid,
+        "token_present": bool(token),
+        "token_preview": token[:20] + "..." if token else None,
+        "refresh_url":   "/auth",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# STANDARD ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
+
 @app.get("/health")
 def health():
-    """Render health check endpoint."""
     return {"status": "ok"}
 
 
 @app.get("/ping")
 def ping():
-    """
-    Keep-alive endpoint for UptimeRobot (prevents Render free tier sleeping).
-    Setup: https://uptimerobot.com → New Monitor → HTTP(s)
-    URL:   https://trading-bot-api.onrender.com/ping
-    Interval: every 5 minutes (free UptimeRobot account)
-    """
+    """UptimeRobot keep-alive — prevents Render free tier sleeping."""
     return {"pong": True, "time": _dt.datetime.utcnow().isoformat() + "Z"}
 
 
 @app.get("/state")
 def get_state():
-    """Full bot state for all active indices."""
     return _build_state_payload()
 
 
 @app.get("/state/{index}")
 def get_index_state(index: str):
-    """Bot state for a single index."""
     idx        = index.upper()
     pnl_raw    = get_data(f"pnl_{idx}")
     spot_raw   = get_data(f"spot_{idx}")
@@ -172,7 +341,6 @@ def get_index_state(index: str):
 
 @app.get("/history")
 def get_history():
-    """Full trade history."""
     try:
         from execution.paper_engine import load_trade_history
         return {"trades": load_trade_history()}
@@ -182,11 +350,9 @@ def get_history():
 
 @app.get("/all_state")
 def get_all_state():
-    """Return every key in the state store (debug)."""
     return get_all_data()
 
 
-# ── Close command ─────────────────────────────────────────────────────────────
 class CloseCmd(BaseModel):
     index: str
     action: str = "close_all"
@@ -195,7 +361,6 @@ class CloseCmd(BaseModel):
 
 @app.post("/close")
 def close_position(cmd: CloseCmd):
-    """Queue a close command for the bot (picked up next cycle)."""
     import tempfile
     STATE_FILE = os.path.join(tempfile.gettempdir(), "trading_bot_state.json")
     try:
@@ -219,7 +384,6 @@ def close_position(cmd: CloseCmd):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── WebSocket ─────────────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)

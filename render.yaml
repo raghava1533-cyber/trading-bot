@@ -3,35 +3,38 @@
 # HOW TO DEPLOY:
 #   1. render.com → New → Blueprint → connect repo raghava1533-cyber/trading-bot
 #   2. Render reads this file and creates both services automatically
-#   3. Set UPSTOX_ACCESS_TOKEN, UPSTOX_API_KEY, UPSTOX_API_SECRET in dashboard
-#   4. Deploy Vercel frontend, then set FRONTEND_URL here
+#   3. Set UPSTOX_API_KEY and UPSTOX_API_SECRET as secrets in dashboard
+#   4. Set UPSTOX_REDIRECT_URI = https://trading-bot-api.onrender.com/auth/callback
+#      in your Upstox Developer Portal app settings
+#   5. Deploy Vercel frontend, then update FRONTEND_URL here
+#
+# DAILY TOKEN REFRESH (10 seconds):
+#   Open https://trading-bot-api.onrender.com/auth in browser
+#   Click "Login with Upstox" → token saves automatically to Redis
+#   No Render dashboard, no env var changes, no redeploy needed
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
-  # ── FastAPI Web Service (API + Bot background task) ─────────────────────────
   - type: web
     name: trading-bot-api
     runtime: python
     region: singapore
     plan: free
-
-    # Build: install all Python dependencies
     buildCommand: pip install -r requirements.txt
-
-    # Start: run from repo root — api/server.py self-adds core/ to sys.path
-    # DO NOT change this — it is correct as-is
     startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT --workers 1
-
     healthCheckPath: /health
 
     envVars:
-      # ── Upstox credentials — ADD THESE AS SECRETS in Render dashboard ───────
-      - key: UPSTOX_ACCESS_TOKEN
-        sync: false
+      # ── Upstox credentials — SET THESE AS SECRETS in Render dashboard ───────
       - key: UPSTOX_API_KEY
         sync: false
       - key: UPSTOX_API_SECRET
         sync: false
+      # UPSTOX_ACCESS_TOKEN is NOT needed here — managed via /auth page + Redis
+
+      # ── Render auto-sets this — used to build /auth/callback URL ────────────
+      - key: RENDER_EXTERNAL_URL
+        value: https://trading-bot-api.onrender.com   # Render sets this automatically
 
       # ── Redis — auto-injected from the Redis service below ──────────────────
       - key: REDIS_URL
@@ -70,7 +73,6 @@ services:
       - key: CARRY_WIN_RATE_THRESHOLD
         value: "0.55"
 
-  # ── Redis (FREE — 25 MB) ─────────────────────────────────────────────────────
   - type: redis
     name: trading-bot-redis
     region: singapore

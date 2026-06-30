@@ -25,12 +25,36 @@ INDEX_KEYS = {
 }
 
 
+def _load_token() -> str:
+    """
+    Load Upstox token with priority:
+    1. Redis  (saved by /auth/callback — persists across restarts)
+    2. Env var UPSTOX_ACCESS_TOKEN (set in Render dashboard)
+    Raises RuntimeError if neither found.
+    """
+    try:
+        from infra.redis_bus import get_data
+        t = get_data("upstox_access_token")
+        if t and len(t) > 20:
+            os.environ["UPSTOX_ACCESS_TOKEN"] = t
+            log.info("Token loaded from Redis")
+            return t
+    except Exception:
+        pass
+    t = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
+    if t and len(t) > 20:
+        log.info("Token loaded from env var")
+        return t
+    raise RuntimeError(
+        "No Upstox token found. "
+        "Open https://your-render-url.onrender.com/auth to login."
+    )
+
+
 class Broker:
     def __init__(self):
         log.info("Upstox Broker initializing...")
-        self.access_token = os.getenv("UPSTOX_ACCESS_TOKEN")
-        if not self.access_token:
-            raise RuntimeError("Missing UPSTOX_ACCESS_TOKEN in .env")
+        self.access_token = _load_token()
 
         cfg = Configuration()
         cfg.access_token = self.access_token
@@ -312,3 +336,4 @@ class Broker:
 
     def logout(self) -> None:
         log.info("Broker logout")
+
