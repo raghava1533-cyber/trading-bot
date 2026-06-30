@@ -1,4 +1,4 @@
-﻿"""
+""
 strategy/strike_selector.py
 
 HOW OPTIONS SPREAD P&L WORKS (important):

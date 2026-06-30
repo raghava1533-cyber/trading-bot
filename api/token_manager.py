@@ -1,4 +1,4 @@
-﻿"""
+""
 api/token_manager.py
 ────────────────────
 Upstox token auto-refresh system for Render deployment.

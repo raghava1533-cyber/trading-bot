@@ -1,4 +1,4 @@
-﻿"""
+""
 broker/auth.py
 ──────────────
 Upstox OAuth2 token exchange helper.

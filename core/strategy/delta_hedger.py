@@ -1,4 +1,4 @@
-﻿"""
+""
 strategy/delta_hedger.py
 Portfolio delta calculation and delta-hedging via index futures/ETF.
 """

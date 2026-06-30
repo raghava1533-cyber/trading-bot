@@ -1,4 +1,4 @@
-﻿import json, os, tempfile
+mport json, os, tempfile
 
 _store: dict = {}
 REDIS_ON = False

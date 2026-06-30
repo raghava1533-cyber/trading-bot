@@ -1,10 +1,10 @@
-﻿# ── Broker / Data ─────────────────────────────────────────────────────────────
+# Broker / Data
 upstox-python-sdk
 yfinance>=0.2.40
 python-dotenv>=1.0.0
 requests>=2.31.0
 
-# ── ML ────────────────────────────────────────────────────────────────────────
+# ML
 numpy>=1.26.0
 pandas>=2.2.0
 scikit-learn>=1.4.0
@@ -12,15 +12,15 @@ joblib>=1.3.0
 xgboost>=2.0.0
 scipy>=1.12.0
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# Dashboard (local only - not needed on Render)
 streamlit>=1.35.0
 streamlit-autorefresh>=1.0.1
 plotly>=5.20.0
 
-# ── API Server ────────────────────────────────────────────────────────────────
+# API Server
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
+# Redis
 redis>=5.0.0

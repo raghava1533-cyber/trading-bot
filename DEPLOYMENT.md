@@ -1,4 +1,4 @@
-﻿# Deployment Guide — 100% FREE Setup
+ Deployment Guide — 100% FREE Setup
 # Render (free) + Vercel (free) + UptimeRobot (free)
 
 ## Total Cost: Rs 0 / month

@@ -1,4 +1,4 @@
-﻿"""
+""
 data/option_chain.py
 Fetches option chain via Upstox broker (primary) or returns empty (no nsepython).
 Use broker.get_option_chain() directly in most cases.

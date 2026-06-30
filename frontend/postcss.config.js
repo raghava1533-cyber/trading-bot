@@ -1,1 +1,1 @@
-﻿module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };
+odule.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };

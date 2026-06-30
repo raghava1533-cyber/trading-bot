@@ -1,4 +1,4 @@
-﻿"""
+""
 train_model.py  -  Train the XGBoost regime model
 
 Usage:

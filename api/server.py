@@ -1,4 +1,4 @@
-﻿"""
+""
 api/server.py  -  FastAPI backend for Render FREE tier
 ────────────────────────────────────────────────────────
 Endpoints:

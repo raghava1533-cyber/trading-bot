@@ -1,4 +1,4 @@
-﻿"""Application configuration — all values from .env with safe defaults."""
+""Application configuration — all values from .env with safe defaults."""
 from __future__ import annotations
 import json, os
 from dataclasses import dataclass
