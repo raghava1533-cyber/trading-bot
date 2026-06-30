@@ -313,6 +313,57 @@ def auth_status():
 # STANDARD ENDPOINTS
 # ═════════════════════════════════════════════════════════════════════════════
 
+# --- Settings endpoints (credentials management) ----------------------------
+class CredentialsIn(BaseModel):
+    api_key:      str = ""
+    api_secret:   str = ""
+    access_token: str = ""
+
+
+@app.get("/settings")
+def get_settings():
+    """Return current credentials (secrets masked)."""
+    from api.settings import load_credentials, check_token
+    creds = load_credentials()
+    token = creds.get("access_token", "")
+    status = check_token(token) if token else {"valid": False, "reason": "No token"}
+    return {
+        "api_key":          creds.get("api_key", ""),
+        "api_secret_set":   bool(creds.get("api_secret", "")),
+        "api_secret_hint":  creds.get("api_secret", "")[:4] + "****" if creds.get("api_secret") else "",
+        "token_valid":      status.get("valid", False),
+        "token_hint":       token[:20] + "..." if token else "",
+        "user_name":        status.get("name", ""),
+        "login_url":        "/auth",
+    }
+
+
+@app.post("/settings")
+def save_settings(creds: CredentialsIn):
+    """Save credentials to Redis. Called from the website settings modal."""
+    from api.settings import save_credentials, check_token
+    result = save_credentials(
+        api_key=creds.api_key.strip(),
+        api_secret=creds.api_secret.strip(),
+        access_token=creds.access_token.strip(),
+    )
+    # If token provided, validate it immediately
+    token_status = {}
+    if creds.access_token.strip():
+        token_status = check_token(creds.access_token.strip())
+    return {**result, "token_status": token_status}
+
+
+@app.get("/settings/token-status")
+def token_status():
+    """Quick check: is the current token valid?"""
+    from api.settings import load_credentials, check_token
+    creds = load_credentials()
+    token = creds.get("access_token", "")
+    status = check_token(token) if token else {"valid": False, "reason": "No token"}
+    return status
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
