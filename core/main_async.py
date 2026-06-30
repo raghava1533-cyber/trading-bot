@@ -1,26 +1,24 @@
-"""
+﻿"""
 main_async.py  -  Trading Bot Entry Point
 
-What happens when you run:  python core/main_async.py
-  1. Auto-authenticate  - checks UPSTOX_ACCESS_TOKEN, refreshes if expired
-  2. Launch dashboard   - starts Streamlit in background (opens browser)
-  3. Train/load model   - XGBoost regime model (retrain if >7 days old)
-  4. Scan indices       - picks best index by regime + OI score
-  5. Trading loop       - runs every POLL_INTERVAL_SECONDS
+Run:  python core/main_async.py
+  1. Auto-authenticate  - checks token, refreshes if expired
+  2. Launch dashboard   - Streamlit at http://localhost:8501
+  3. Load/train model   - XGBoost regime model
+  4. Scan indices       - picks best by regime + OI score
+  5. Trading loop       - runs every POLL_INTERVAL_SECONDS (IST-aware)
 """
 import asyncio, datetime, json, logging, os, subprocess, sys, tempfile, traceback
 from datetime import date
 
 from data.candles import fetch_candles
 from execution.paper_engine import PaperEngine
-from greeks.engine import greeks_fd
 from broker.upstox import Broker
 from infra.redis_bus import set_data
 from ml.regime_xgb import load_model, predict_regime
 from strategy.strike_selector import select_strikes
 from config import SETTINGS, INDEX_CONFIG
 
-# ── Constants from .env ───────────────────────────────────────────────────────
 POLL_INTERVAL      = SETTINGS.poll_interval_seconds
 TRADE_COOLDOWN     = SETTINGS.trade_cooldown_seconds
 MAX_TRADES_PER_DAY = SETTINGS.max_trades_per_day
@@ -32,6 +30,7 @@ STATE_FILE         = os.path.join(tempfile.gettempdir(), "trading_bot_state.json
 
 last_trade_time: dict = {}
 trade_count:     dict = {}
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 def setup_logging():
@@ -47,13 +46,64 @@ def setup_logging():
 def log(msg, level=logging.INFO):
     logging.log(level, msg)
 
+
+# ── IST time helper ───────────────────────────────────────────────────────────
+def _ist_now() -> datetime.datetime:
+    """
+    Return current time in IST (UTC+5:30).
+    Works regardless of the machine's local timezone.
+    Does NOT require pytz or zoneinfo.
+    """
+    utc_now = datetime.datetime.utcnow()
+    ist_offset = datetime.timedelta(hours=5, minutes=30)
+    return utc_now + ist_offset
+
+
+# ── Market status ─────────────────────────────────────────────────────────────
+def market_status() -> tuple[bool, str]:
+    """
+    Returns (is_open: bool, reason: str) using IST time.
+    Checks: weekend, market hours.
+    """
+    now = _ist_now()
+    t   = now.time()
+    wd  = now.weekday()   # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+
+    if wd >= 5:
+        day = "Saturday" if wd == 5 else "Sunday"
+        return False, f"Weekend ({day}) - market closed"
+
+    open_t  = SETTINGS.market_open_time
+    close_t = SETTINGS.market_close_time
+
+    if t < open_t:
+        opens_in = datetime.datetime.combine(now.date(), open_t) - \
+                   datetime.datetime.combine(now.date(), t)
+        mins = int(opens_in.total_seconds() // 60)
+        return False, f"Pre-market - opens in {mins}m (IST {open_t.strftime('%H:%M')})"
+
+    if t > close_t:
+        return False, f"Post-market - closed at IST {close_t.strftime('%H:%M')}"
+
+    return True, f"Market OPEN (IST {t.strftime('%H:%M:%S')})"
+
+
+def market_open() -> bool:
+    is_open, _ = market_status()
+    return is_open
+
+
+def can_trade(idx: str) -> bool:
+    if trade_count.get(idx, 0) >= MAX_TRADES_PER_DAY:
+        return False
+    lt = last_trade_time.get(idx)
+    if lt and (datetime.datetime.now() - lt).seconds < TRADE_COOLDOWN:
+        return False
+    return True
+
+
 # ── Step 1: Auto-authenticate ─────────────────────────────────────────────────
 def auto_authenticate() -> bool:
-    """
-    Check if UPSTOX_ACCESS_TOKEN is valid.
-    If expired/missing, run the OAuth2 exchange flow automatically.
-    Returns True if authenticated, False if failed.
-    """
     import requests, re
     from dotenv import load_dotenv
     _env = os.path.join(os.path.dirname(__file__), ".env")
@@ -61,7 +111,6 @@ def auto_authenticate() -> bool:
 
     token = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
 
-    # ── Check existing token ──────────────────────────────────────────────────
     if token and len(token) > 20:
         try:
             resp = requests.get(
@@ -77,31 +126,25 @@ def auto_authenticate() -> bool:
         except Exception as exc:
             log(f"Token check failed: {exc}", logging.WARNING)
 
-    # ── Token missing or expired - try to exchange auth code ─────────────────
     api_key      = os.getenv("UPSTOX_API_KEY", "").strip()
     api_secret   = os.getenv("UPSTOX_API_SECRET", "").strip()
     redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1").strip()
     auth_code    = os.getenv("UPSTOX_AUTH_CODE", "").strip()
+    bad          = ("", "your_api_key_here", "your_secret_key_here",
+                    "paste_auth_code_here", "your_token_here")
 
-    bad_placeholders = ("", "your_api_key_here", "your_secret_key_here",
-                        "paste_auth_code_here", "your_token_here")
-
-    if api_key in bad_placeholders or api_secret in bad_placeholders:
+    if api_key in bad or api_secret in bad:
         log("UPSTOX_API_KEY / UPSTOX_API_SECRET not set in .env", logging.ERROR)
-        log("Set them and re-run, or run:  python core/broker/auth.py", logging.ERROR)
         return False
 
-    if not auth_code or auth_code in bad_placeholders:
-        # No auth code - print login URL and ask user to run auth.py
+    if not auth_code or auth_code in bad:
         from urllib.parse import urlencode
         params = {"response_type": "code", "client_id": api_key, "redirect_uri": redirect_uri}
-        login_url = f"https://api.upstox.com/v2/login/authorization/dialog?{urlencode(params)}"
-        log("Access token expired. Run this to refresh:", logging.WARNING)
-        log(f"  python core/broker/auth.py", logging.WARNING)
-        log(f"  Or open: {login_url}", logging.WARNING)
+        url = f"https://api.upstox.com/v2/login/authorization/dialog?{urlencode(params)}"
+        log("Access token expired. Run:  python core/broker/auth.py", logging.WARNING)
+        log(f"Or open: {url}", logging.WARNING)
         return False
 
-    # ── Exchange auth code for token ──────────────────────────────────────────
     log("Exchanging auth code for access token...")
     try:
         resp = requests.post(
@@ -113,40 +156,32 @@ def auto_authenticate() -> bool:
             timeout=15,
         )
         if resp.status_code != 200:
-            log(f"Token exchange failed: {resp.status_code} {resp.text}", logging.ERROR)
+            log(f"Token exchange failed: {resp.status_code}", logging.ERROR)
             return False
         new_token = resp.json().get("access_token", "")
         if not new_token:
             log("No access_token in response", logging.ERROR)
             return False
-
-        # Save to .env
         content = open(_env, "r", encoding="utf-8").read()
         new_line = f"UPSTOX_ACCESS_TOKEN={new_token}"
         if re.search(r"^UPSTOX_ACCESS_TOKEN=.*$", content, re.MULTILINE):
             content = re.sub(r"^UPSTOX_ACCESS_TOKEN=.*$", new_line, content, re.MULTILINE)
         else:
             content = content.rstrip("\n") + f"\n{new_line}\n"
-        # Clear used auth code
         content = re.sub(r"^UPSTOX_AUTH_CODE=.*$", "UPSTOX_AUTH_CODE=",
                          content, flags=re.MULTILINE)
         with open(_env, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
-
         os.environ["UPSTOX_ACCESS_TOKEN"] = new_token
         log("New access token saved to .env")
         return True
-
     except Exception as exc:
         log(f"Token exchange error: {exc}", logging.ERROR)
         return False
 
-# ── Step 2: Launch Streamlit dashboard ───────────────────────────────────────
-def launch_dashboard() -> subprocess.Popen | None:
-    """
-    Start Streamlit dashboard in a background process.
-    Returns the Popen handle (or None if launch failed).
-    """
+
+# ── Step 2: Launch dashboard ──────────────────────────────────────────────────
+def launch_dashboard():
     dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard", "app.py")
     if not os.path.exists(dashboard_path):
         log("Dashboard not found - skipping", logging.WARNING)
@@ -169,6 +204,7 @@ def launch_dashboard() -> subprocess.Popen | None:
         log(f"Dashboard launch failed: {exc}", logging.WARNING)
         return None
 
+
 # ── State writer ──────────────────────────────────────────────────────────────
 def _write_state(updates: dict):
     try:
@@ -182,18 +218,6 @@ def _write_state(updates: dict):
     except Exception as exc:
         log(f"_write_state: {exc}", logging.WARNING)
 
-# ── Market hours ──────────────────────────────────────────────────────────────
-def market_open() -> bool:
-    now = datetime.datetime.now().time()
-    return SETTINGS.market_open_time <= now <= SETTINGS.market_close_time
-
-def can_trade(idx: str) -> bool:
-    if trade_count.get(idx, 0) >= MAX_TRADES_PER_DAY:
-        return False
-    lt = last_trade_time.get(idx)
-    if lt and (datetime.datetime.now() - lt).seconds < TRADE_COOLDOWN:
-        return False
-    return True
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def get_ltp(chain, strike, opt_type):
@@ -202,8 +226,6 @@ def get_ltp(chain, strike, opt_type):
             return row[opt_type].get("ltp")
     return None
 
-def get_atm_strike(chain, spot):
-    return min([r["strikePrice"] for r in chain], key=lambda x: abs(x - spot))
 
 # ── Index scanner ─────────────────────────────────────────────────────────────
 def pick_best_index(broker, model, indices):
@@ -242,6 +264,7 @@ def pick_best_index(broker, model, indices):
     log(f"Best index: {scores[best]['label']}  (score {scores[best]['score']:.2f})")
     return best
 
+
 # ── Trade execution ───────────────────────────────────────────────────────────
 async def execute_trade(engine, idx, strategy_name, legs, chain):
     global last_trade_time, trade_count
@@ -268,11 +291,21 @@ async def execute_trade(engine, idx, strategy_name, legs, chain):
         log("Trade execution failed", logging.ERROR)
         traceback.print_exc()
 
+
 # ── Main trading cycle ────────────────────────────────────────────────────────
+_last_closed_log = None   # throttle "market closed" log to once per 5 min
+
 async def run_cycle(broker, model, engine, idx):
+    global _last_closed_log
     try:
-        if not market_open():
-            log(f"[{idx}] Market closed - waiting...")
+        is_open, status_msg = market_status()
+
+        if not is_open:
+            # Log "market closed" at most once every 5 minutes
+            now = datetime.datetime.now()
+            if _last_closed_log is None or (now - _last_closed_log).seconds >= 300:
+                log(f"[{idx}] {status_msg}")
+                _last_closed_log = now
             return
 
         cfg      = INDEX_CONFIG[idx]
@@ -288,8 +321,7 @@ async def run_cycle(broker, model, engine, idx):
             return
 
         engine.mark_to_market(chain)
-        pnl         = engine.get_pnl()
-        margin_info = engine.get_margin_info()
+        pnl = engine.get_pnl()
 
         # Write state for dashboard
         set_data(f"pnl_{idx}",    str(pnl))
@@ -303,34 +335,33 @@ async def run_cycle(broker, model, engine, idx):
             "all_positions": json.dumps(all_pos, default=str),
         })
 
-        log(f"[{idx}] Spot:{spot:,.0f}  Regime:{regime}  "
-            f"Unrealized:{pnl['unrealized']:+,.0f}  Total:{pnl['total']:+,.0f}")
+        ist = _ist_now()
+        log(f"[{idx}] IST:{ist.strftime('%H:%M:%S')}  Spot:{spot:,.0f}  "
+            f"Regime:{regime}  Unrealized:{pnl['unrealized']:+,.0f}  "
+            f"Total:{pnl['total']:+,.0f}")
 
-        # ── Exit checks ───────────────────────────────────────────────────────
+        # Exit checks
         if pnl["unrealized"] <= STOP_LOSS:
             log(f"[{idx}] STOP LOSS hit: Rs{pnl['unrealized']:,.0f}", logging.WARNING)
             engine.close_all(exit_reason="STOP_LOSS")
             return
-
         if pnl["unrealized"] >= TARGET:
             log(f"[{idx}] TARGET hit: Rs{pnl['unrealized']:,.0f}")
             engine.close_all(exit_reason="TARGET")
             return
 
-        # ── Entry checks ──────────────────────────────────────────────────────
         if engine.has_open_positions() or not can_trade(idx):
             return
 
         # Time to expiry
         expiry_str = broker.get_nearest_expiry(idx)
+        T = 0.1
         if expiry_str:
             try:
                 expiry_date = datetime.datetime.strptime(expiry_str, "%Y-%m-%d").date()
                 T = max((expiry_date - date.today()).days / 365, 1 / 365)
             except Exception:
-                T = 0.1
-        else:
-            T = 0.1
+                pass
 
         strategy = {"SIDE": "IRON_CONDOR", "BULL": "BULL_PUT",
                     "BEAR": "BEAR_CALL"}.get(regime)
@@ -350,6 +381,7 @@ async def run_cycle(broker, model, engine, idx):
         log(f"[{idx}] Cycle error", logging.ERROR)
         traceback.print_exc()
 
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
     setup_logging()
@@ -358,48 +390,51 @@ async def main():
     log("  ALGO TRADING BOT  -  Starting up")
     log("=" * 60)
 
-    # ── Step 1: Authenticate ──────────────────────────────────────────────────
+    # Step 1: Authenticate
     log("Step 1/4: Checking Upstox authentication...")
     if not auto_authenticate():
-        log("Authentication failed. Exiting.", logging.ERROR)
-        log("Run:  python core/broker/auth.py  to fix this.", logging.ERROR)
+        log("Authentication failed. Run:  python core/broker/auth.py", logging.ERROR)
         sys.exit(1)
 
-    # ── Step 2: Launch dashboard ──────────────────────────────────────────────
+    # Step 2: Dashboard
     log("Step 2/4: Launching dashboard...")
     dash_proc = launch_dashboard()
     if dash_proc:
-        log("Dashboard: http://localhost:8501  (open in browser)")
-    else:
-        log("Dashboard not started - run manually: "
-            "streamlit run core/dashboard/app.py", logging.WARNING)
+        log("Dashboard: http://localhost:8501")
 
-    # ── Step 3: Load model ────────────────────────────────────────────────────
+    # Step 3: Model
     log("Step 3/4: Loading regime model...")
     broker = Broker()
     model  = load_model(broker=broker)
     log("Model ready")
 
-    # ── Step 4: Pick best index ───────────────────────────────────────────────
+    # Step 4: Best index
     log("Step 4/4: Scanning indices...")
     active = pick_best_index(broker, model, list(INDEX_CONFIG.keys()))
     cfg    = INDEX_CONFIG[active]
 
+    # Show market status
+    is_open, status_msg = market_status()
+    ist = _ist_now()
+
     log("-" * 60)
-    log(f"  Index:       {cfg['label']}  (lot size: {cfg['lot_size']})")
-    log(f"  Stop Loss:   Rs{STOP_LOSS:,}")
-    log(f"  Target:      Rs{TARGET:,}")
-    log(f"  Delta:       {TARGET_DELTA}")
-    log(f"  Spread:      {SPREAD_WIDTH} pts")
-    log(f"  Mode:        {'DRY RUN (paper trading)' if SETTINGS.dry_run else '🔴 LIVE TRADING'}")
-    log(f"  Dashboard:   http://localhost:8501")
+    log(f"  Index      : {cfg['label']}  (lot size: {cfg['lot_size']})")
+    log(f"  Stop Loss  : Rs{STOP_LOSS:,}")
+    log(f"  Target     : Rs{TARGET:,}")
+    log(f"  Delta      : {TARGET_DELTA}")
+    log(f"  Spread     : {SPREAD_WIDTH} pts")
+    log(f"  Mode       : {'DRY RUN (paper trading)' if SETTINGS.dry_run else 'LIVE TRADING'}")
+    log(f"  IST Time   : {ist.strftime('%Y-%m-%d %H:%M:%S')}")
+    log(f"  Market     : {status_msg}")
+    log(f"  Hours      : {SETTINGS.market_open_time.strftime('%H:%M')} - "
+        f"{SETTINGS.market_close_time.strftime('%H:%M')} IST  (Mon-Fri)")
+    log(f"  Dashboard  : http://localhost:8501")
     log("-" * 60)
 
     engine = PaperEngine()
     trade_count[active]     = 0
     last_trade_time[active] = None
 
-    # ── Trading loop ──────────────────────────────────────────────────────────
     log("Bot running. Press Ctrl+C to stop.")
     try:
         while True:
@@ -410,7 +445,6 @@ async def main():
                 traceback.print_exc()
             await asyncio.sleep(POLL_INTERVAL)
     finally:
-        # Clean shutdown
         if dash_proc and dash_proc.poll() is None:
             dash_proc.terminate()
             log("Dashboard stopped.")
