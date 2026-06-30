@@ -1,0 +1,12 @@
+# Vercel only builds frontend/ - ignore everything else
+core/
+api/
+models/
+*.py
+*.txt
+*.yaml
+*.md
+render.yaml
+Procfile
+trading_bot.log
+instruments_cache.json
