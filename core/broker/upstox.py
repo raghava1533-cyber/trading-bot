@@ -146,18 +146,29 @@ class Broker:
         return None
 
     # ── Nearest expiry ────────────────────────────────────────────────────────
+    # Exchange map per index
+    _EXCHANGE = {
+        "NIFTY":      "NSE_FO",
+        "BANKNIFTY":  "NSE_FO",
+        "FINNIFTY":   "NSE_FO",
+        "MIDCPNIFTY": "NSE_FO",
+        "SENSEX":     "BSE_FO",
+        "BANKEX":     "BSE_FO",
+    }
+
     def get_nearest_expiry(self, symbol: str = "NIFTY") -> str | None:
         try:
             instruments = self.load_instruments()
+            exchange = self._EXCHANGE.get(symbol.upper(), "NSE_FO")
             expiries = sorted({
                 i["expiry"] for i in instruments
-                if i.get("exchange") == "NSE_FO"
+                if i.get("exchange") == exchange
                 and i.get("name", "").upper() == symbol.upper()
                 and i.get("instrument_type") == "OPTIDX"
                 and i.get("expiry")
             })
             if not expiries:
-                log.error(f"No expiries found for {symbol}")
+                log.error(f"No expiries found for {symbol} on {exchange}")
                 return None
             log.info(f"Nearest expiry {symbol}: {expiries[0]}")
             return expiries[0]
@@ -187,9 +198,10 @@ class Broker:
 
             log.info(f"Building chain {symbol} | expiry={expiry} | spot={spot:,.0f}")
 
+            exchange = self._EXCHANGE.get(symbol.upper(), "NSE_FO")
             options = [
                 i for i in instruments
-                if i.get("exchange") == "NSE_FO"
+                if i.get("exchange") == exchange
                 and i.get("name", "").upper() == symbol.upper()
                 and i.get("instrument_type") == "OPTIDX"
                 and i.get("expiry") == expiry
@@ -197,45 +209,52 @@ class Broker:
                 and abs(float(i["strike"]) - spot) <= range_size
             ]
 
+            if not options:
+                log.error(f"No options found for {symbol} on {exchange} expiry={expiry}")
+                return [], None
+
+            log.info(f"Found {len(options)} option contracts for {symbol}")
+
             grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
+
+            # Batch LTP calls - up to 500 keys per request (Upstox limit)
+            BATCH = 200
+            keys_map = {opt["instrument_key"]: opt for opt in options}
+            all_keys = list(keys_map.keys())
+            ltp_data = {}
+            for i in range(0, len(all_keys), BATCH):
+                batch = all_keys[i:i+BATCH]
+                try:
+                    resp = self._safe_ltp(batch)
+                    if resp and resp.data:
+                        for k, v in resp.data.items():
+                            ltp_data[k] = float(v.last_price)
+                    time.sleep(0.1)
+                except Exception as exc:
+                    log.warning(f"Batch LTP failed: {exc}")
 
             for opt in options:
                 strike = float(opt["strike"])
                 side   = opt.get("option_type")
                 if side not in ("CE", "PE"):
                     continue
-                try:
-                    resp = self._safe_ltp([opt["instrument_key"]])
-                    if not resp or not resp.data:
-                        continue
-                    ltp = float(list(resp.data.values())[0].last_price)
+                ikey = opt["instrument_key"]
+                ltp  = ltp_data.get(ikey)
+                if ltp is None:
+                    continue
 
-                    oi, iv = default_oi, default_iv
-                    try:
-                        full = self._safe_quote([opt["instrument_key"]])
-                        if full and full.data:
-                            q  = list(full.data.values())[0]
-                            oi = int(getattr(q, "oi", 0) or 0) or default_oi
-                            iv_raw = getattr(q, "implied_volatility", None)
-                            iv = float(iv_raw) / 100.0 if iv_raw else default_iv
-                    except Exception:
-                        pass
+                sym = opt.get("tradingsymbol", "").strip()
+                if not sym:
+                    sym = f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
 
-                    sym = opt.get("tradingsymbol", "").strip()
-                    if not sym:
-                        sym = f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
-
-                    grouped[strike]["strikePrice"] = strike
-                    grouped[strike][side] = {
-                        "ltp":            ltp,
-                        "iv":             iv,
-                        "oi":             oi,
-                        "tradingsymbol":  sym,
-                        "instrument_key": opt["instrument_key"],
-                    }
-                    time.sleep(float(os.getenv("QUOTE_THROTTLE_SECONDS", "0.05")))
-                except Exception as exc:
-                    log.warning(f"Skipping strike {strike} {side}: {exc}")
+                grouped[strike]["strikePrice"] = strike
+                grouped[strike][side] = {
+                    "ltp":            ltp,
+                    "iv":             default_iv,
+                    "oi":             default_oi,
+                    "tradingsymbol":  sym,
+                    "instrument_key": ikey,
+                }
 
             chain = sorted(
                 [v for v in grouped.values() if v["strikePrice"] is not None],

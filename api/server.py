@@ -648,6 +648,57 @@ def get_logs():
         return {"error": str(e), "lines": []}
 
 
+@app.get("/chain-test/{symbol}")
+def chain_test(symbol: str = "NIFTY"):
+    """Test option chain fetch for a symbol - shows exactly where it fails."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
+    result = {"symbol": symbol.upper(), "steps": {}}
+    try:
+        from broker.upstox import Broker
+        b = Broker()
+        result["steps"]["broker"] = "OK"
+    except Exception as e:
+        result["steps"]["broker"] = f"FAIL: {e}"
+        return result
+    try:
+        instruments = b.load_instruments()
+        result["steps"]["instruments"] = f"OK - {len(instruments)} rows"
+    except Exception as e:
+        result["steps"]["instruments"] = f"FAIL: {e}"
+        return result
+    try:
+        spot = b.get_spot(symbol)
+        result["steps"]["spot"] = f"OK - {spot}"
+    except Exception as e:
+        result["steps"]["spot"] = f"FAIL: {e}"
+        return result
+    try:
+        expiry = b.get_nearest_expiry(symbol)
+        result["steps"]["expiry"] = f"OK - {expiry}"
+    except Exception as e:
+        result["steps"]["expiry"] = f"FAIL: {e}"
+        return result
+    try:
+        exchange = b._EXCHANGE.get(symbol.upper(), "NSE_FO")
+        opts = [i for i in instruments
+                if i.get("exchange") == exchange
+                and i.get("name","").upper() == symbol.upper()
+                and i.get("instrument_type") == "OPTIDX"
+                and i.get("expiry") == expiry]
+        result["steps"]["filter"] = f"OK - {len(opts)} contracts on {exchange}"
+        result["sample"] = opts[:3] if opts else []
+    except Exception as e:
+        result["steps"]["filter"] = f"FAIL: {e}"
+    try:
+        chain, sp = b.get_option_chain(symbol, range_size=500)
+        result["steps"]["chain"] = f"OK - {len(chain)} strikes"
+        result["chain_sample"] = chain[:2] if chain else []
+    except Exception as e:
+        result["steps"]["chain"] = f"FAIL: {e}"
+    return result
+
+
 @app.get("/debug")
 def debug():
     """Show all Redis keys and bot state - for troubleshooting."""
