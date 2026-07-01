@@ -607,6 +607,60 @@ async def train_stop():
     return {"ok": False, "message": "No training running"}
 
 
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """Root page - shows bot status and links."""
+    bot_running = _bot_status.get("running", False)
+    status_color = "#10b981" if bot_running else "#ef4444"
+    status_text  = "Running" if bot_running else "Stopped"
+    return f"""<!DOCTYPE html>
+<html><head><title>Trading Bot API</title>
+<style>body{{background:#0f1117;color:#e2e8f0;font-family:system-ui;display:flex;
+align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;padding:40px;
+max-width:500px;width:100%}}h1{{color:#63b3ed;margin:0 0 8px}}
+.badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:700;
+background:{status_color}22;color:{status_color};border:1px solid {status_color}}}
+a{{color:#63b3ed;text-decoration:none;display:block;padding:8px 0;border-bottom:
+1px solid #2d3748}}.links{{margin-top:20px}}</style></head>
+<body><div class="card">
+<h1>Algo Trading Bot API</h1>
+<p>Bot status: <span class="badge">{status_text}</span></p>
+<div class="links">
+<a href="/health">/health - Health check</a>
+<a href="/state">/state - Full bot state (JSON)</a>
+<a href="/auth">/auth - Upstox token refresh</a>
+<a href="/auth/status">/auth/status - Token status</a>
+<a href="/debug">/debug - Redis keys debug</a>
+<a href="/docs">/docs - API documentation</a>
+</div></div></body></html>"""
+
+
+@app.get("/debug")
+def debug():
+    """Show all Redis keys and bot state - for troubleshooting."""
+    try:
+        from infra.redis_bus import get_data
+        keys = ["last_update","all_positions","bot_status","bot_start_time"]
+        for idx in ["NIFTY","BANKNIFTY","SENSEX"]:
+            keys += [f"spot_{idx}", f"regime_{idx}", f"pnl_{idx}"]
+        result = {}
+        for k in keys:
+            v = get_data(k)
+            if v and len(str(v)) > 200:
+                result[k] = str(v)[:200] + "..."
+            else:
+                result[k] = v
+        return {
+            "bot_status":  _bot_status,
+            "redis_keys":  result,
+            "api_base":    RENDER_URL,
+            "vercel_url":  VERCEL_URL,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

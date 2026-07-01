@@ -283,7 +283,15 @@ def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
         set_data(f"spot_{idx}",   str(spot))
         set_data(f"regime_{idx}", regime)
         set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
-        set_data("all_positions", json.dumps({idx: positions_out}, default=str))
+        # Merge all_positions across indices (don't overwrite other indices)
+        try:
+            from infra.redis_bus import get_data as _gd
+            existing_raw = _gd("all_positions")
+            all_pos = json.loads(existing_raw) if existing_raw else {}
+        except Exception:
+            all_pos = {}
+        all_pos[idx] = positions_out
+        set_data("all_positions", json.dumps(all_pos, default=str))
         set_data("last_update",   data["last_update"])
     except Exception as exc:
         log(f"_write_state: {exc}", logging.WARNING)
@@ -574,13 +582,12 @@ async def main():
     broker = Broker()
     model  = load_model(broker=broker)
     log("Model ready")
-    log("Step 4/4: Scanning indices...")
-    active = pick_best_index(broker, model, list(INDEX_CONFIG.keys()))
-    cfg    = INDEX_CONFIG[active]
+    log("Step 4/4: Starting trading loop for all active indices...")
+    active_indices = list(SETTINGS.active_indices) or list(INDEX_CONFIG.keys())
     is_open, status_msg = market_status()
     ist = _ist_now()
     log("-" * 60)
-    log(f"  Index      : {cfg['label']}  (lot size: {cfg['lot_size']})")
+    log(f"  Indices    : {', '.join(active_indices)}")
     log(f"  Stop Loss  : Rs{STOP_LOSS:,}")
     log(f"  Target     : Rs{TARGET:,}")
     log(f"  Delta      : {TARGET_DELTA}")
@@ -590,17 +597,24 @@ async def main():
     log(f"  Market     : {status_msg}")
     log(f"  Hours      : {SETTINGS.market_open_time.strftime('%H:%M')} - "
         f"{SETTINGS.market_close_time.strftime('%H:%M')} IST  (Mon-Fri)")
-    log(f"  Dashboard  : http://localhost:8501")
     log(f"  Carry threshold: {_CARRY_WIN_RATE_THRESHOLD:.0%} win-rate")
     log("-" * 60)
-    engine = PaperEngine()
-    trade_count[active]     = 0
-    last_trade_time[active] = None
+
+    # One PaperEngine per index
+    engines = {idx: PaperEngine() for idx in active_indices}
+    for idx in active_indices:
+        trade_count[idx]     = 0
+        last_trade_time[idx] = None
+
     log("Bot running. Press Ctrl+C to stop.")
     try:
         while True:
             try:
-                await run_cycle(broker, model, engine, active)
+                # Run all indices concurrently each cycle
+                await asyncio.gather(*[
+                    run_cycle(broker, model, engines[idx], idx)
+                    for idx in active_indices
+                ], return_exceptions=True)
             except Exception as exc:
                 log(f"Loop error: {exc}", logging.ERROR)
                 traceback.print_exc()
