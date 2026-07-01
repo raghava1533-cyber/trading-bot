@@ -1,8 +1,8 @@
 """
-broker/upstox.py  —  Upstox API wrapper
-Provides: get_spot, get_nearest_expiry, get_option_chain, get_candles, place_order
+broker/upstox.py  -  Upstox API wrapper
+Rate limit: Upstox allows ~1 req/sec. All calls go through _rate_limited_call().
 """
-import csv, gzip, io, json, logging, os, time
+import csv, gzip, io, json, logging, os, time, threading
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -13,7 +13,6 @@ from upstox_client.api.market_quote_api import MarketQuoteApi
 from upstox_client.api.order_api import OrderApi
 
 load_dotenv()
-
 log = logging.getLogger(__name__)
 
 INDEX_KEYS = {
@@ -22,145 +21,177 @@ INDEX_KEYS = {
     "FINNIFTY":   "NSE_INDEX|Nifty Fin Service",
     "MIDCPNIFTY": "NSE_INDEX|Nifty MidCap Select",
     "SENSEX":     "BSE_INDEX|SENSEX",
+    "BANKEX":     "BSE_INDEX|BSE Bankex",
 }
+_EXCHANGE = {
+    "NIFTY": "NSE_FO", "BANKNIFTY": "NSE_FO",
+    "FINNIFTY": "NSE_FO", "MIDCPNIFTY": "NSE_FO",
+    "SENSEX": "BSE_FO", "BANKEX": "BSE_FO",
+}
+
+# Global rate limiter - ONE lock shared across all Broker instances
+_rate_lock      = threading.Lock()
+_last_call_ts   = 0.0
+_MIN_GAP        = 1.2   # seconds between any two Upstox API calls
+
+
+def _rate_limited_call(fn, *args, **kwargs):
+    """Enforce min gap + exponential backoff on 429."""
+    global _last_call_ts
+    with _rate_lock:
+        gap = time.time() - _last_call_ts
+        if gap < _MIN_GAP:
+            time.sleep(_MIN_GAP - gap)
+        _last_call_ts = time.time()
+    for attempt in range(5):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            msg = str(exc)
+            if "429" in msg or "Too Many" in msg:
+                wait = min(2 ** attempt * 3, 60)   # 3,6,12,24,60s
+                log.warning(f"429 rate limit - backing off {wait}s (attempt {attempt+1}/5)")
+                time.sleep(wait)
+                with _rate_lock:
+                    _last_call_ts = time.time()
+            else:
+                raise
+    raise RuntimeError("Rate limit: 5 retries exhausted")
 
 
 def _load_token() -> str:
-    """
-    Load Upstox token with priority:
-    1. Redis  (saved by /auth/callback — persists across restarts)
-    2. Env var UPSTOX_ACCESS_TOKEN (set in Render dashboard)
-    Raises RuntimeError if neither found.
-    """
     try:
         from infra.redis_bus import get_data
         t = get_data("upstox_access_token")
         if t and len(t) > 20:
             os.environ["UPSTOX_ACCESS_TOKEN"] = t
-            log.info("Token loaded from Redis")
             return t
     except Exception:
         pass
     t = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
     if t and len(t) > 20:
-        log.info("Token loaded from env var")
         return t
-    raise RuntimeError(
-        "No Upstox token found. "
-        "Open https://trading-bot-av9x.onrender.com/auth to login."
-    )
+    raise RuntimeError("No Upstox token. Open /auth to login.")
 
 
 class Broker:
     def __init__(self):
-        log.info("Upstox Broker initializing...")
+        log.info("Broker initializing...")
         self.access_token = _load_token()
-
         cfg = Configuration()
         cfg.access_token = self.access_token
         self.api_client  = ApiClient(configuration=cfg)
         self.market_api  = MarketQuoteApi(self.api_client)
         self.order_api   = OrderApi(self.api_client)
+        self._instrument_cache    = None
+        self._instrument_cache_ts = 0.0
+        self.instrument_file      = os.getenv("INSTRUMENT_CACHE_FILE", "instruments_cache.json")
+        self._cache_ttl           = float(os.getenv("INSTRUMENT_CACHE_TTL_HOURS", "12")) * 3600
+        self._spot_cache: dict    = {}   # {symbol: (price, ts)}
+        self._spot_cache_ttl      = 30.0
+        log.info("Broker ready")
 
-        self._instrument_cache     = None
-        self._instrument_cache_ts  = 0.0
-        self.instrument_file       = os.getenv("INSTRUMENT_CACHE_FILE", "instruments_cache.json")
-        self._cache_ttl            = float(os.getenv("INSTRUMENT_CACHE_TTL_HOURS", "12")) * 3600
-
-    # ── Internal helpers ──────────────────────────────────────────────────────
-    def _safe_ltp(self, keys: list[str]):
+    def _ltp(self, keys: list):
+        """Rate-limited LTP call."""
         k = ",".join(keys)
-        try:
-            return self.market_api.ltp(symbol=k, api_version="v2")
-        except TypeError:
-            return self.market_api.ltp(symbol=k)
+        def _call():
+            try:
+                return self.market_api.ltp(symbol=k, api_version="v2")
+            except TypeError:
+                return self.market_api.ltp(symbol=k)
+        return _rate_limited_call(_call)
 
-    def _safe_quote(self, keys: list[str]):
-        try:
-            k = ",".join(keys)
-            return self.market_api.get_full_market_quote(symbol=k, api_version="v2")
-        except Exception:
-            return None
-
-    # ── Instrument master ─────────────────────────────────────────────────────
-    def load_instruments(self) -> list[dict]:
+    def load_instruments(self) -> list:
         now = time.time()
         if self._instrument_cache and (now - self._instrument_cache_ts) < self._cache_ttl:
             return self._instrument_cache
-
         if os.path.exists(self.instrument_file):
             age = now - os.path.getmtime(self.instrument_file)
             if age < self._cache_ttl:
                 try:
-                    with open(self.instrument_file, "r") as f:
-                        data = json.load(f)
+                    data = json.load(open(self.instrument_file))
                     self._instrument_cache    = data
                     self._instrument_cache_ts = now
-                    log.info(f"Instruments loaded from cache ({len(data)} rows)")
+                    log.info(f"Instruments from cache: {len(data)} rows")
                     return data
                 except Exception:
-                    log.warning("Instrument cache corrupt — re-downloading")
-
-        url = os.getenv(
-            "INSTRUMENT_MASTER_URL",
-            "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz",
-        )
+                    pass
+        url = os.getenv("INSTRUMENT_MASTER_URL",
+            "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz")
         log.info("Downloading instrument master...")
         for attempt in range(3):
             try:
-                resp = requests.get(url, timeout=15)
+                resp = requests.get(url, timeout=30)
                 resp.raise_for_status()
                 with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
                     content = gz.read().decode("utf-8")
                 data = list(csv.DictReader(io.StringIO(content)))
-                if not data:
-                    raise ValueError("Empty CSV")
-                with open(self.instrument_file, "w") as f:
-                    json.dump(data, f)
+                json.dump(data, open(self.instrument_file, "w"))
                 self._instrument_cache    = data
                 self._instrument_cache_ts = now
                 log.info(f"Instruments downloaded: {len(data)} rows")
                 return data
             except Exception as exc:
-                log.warning(f"Instrument download attempt {attempt+1} failed: {exc}")
-                time.sleep(2)
-        raise RuntimeError("Failed to load instrument master after 3 attempts")
+                log.warning(f"Instrument download attempt {attempt+1}: {exc}")
+                time.sleep(5)
+        raise RuntimeError("Failed to load instruments")
 
-    # ── Spot price ────────────────────────────────────────────────────────────
-    def get_spot(self, symbol: str = "NIFTY", retries: int = 3) -> float | None:
-        key = INDEX_KEYS.get(symbol.upper())
+    def get_spot(self, symbol: str = "NIFTY") -> float | None:
+        sym = symbol.upper()
+        cached = self._spot_cache.get(sym)
+        if cached and time.time() - cached[1] < self._spot_cache_ttl:
+            return cached[0]
+        key = INDEX_KEYS.get(sym)
         if not key:
-            log.error(f"No index key for {symbol}")
+            log.error(f"No index key for {sym}")
             return None
-        for attempt in range(retries):
-            try:
-                resp = self._safe_ltp([key])
-                if resp and resp.data:
-                    price = float(list(resp.data.values())[0].last_price)
-                    log.info(f"{symbol} spot = {price:,.2f}")
-                    return price
-            except Exception as exc:
-                log.warning(f"get_spot attempt {attempt+1}: {exc}")
-                time.sleep(2)
-        log.error(f"get_spot: all retries exhausted for {symbol}")
+        try:
+            resp = self._ltp([key])
+            if resp and resp.data:
+                price = float(list(resp.data.values())[0].last_price)
+                self._spot_cache[sym] = (price, time.time())
+                log.info(f"{sym} spot = {price:,.2f}")
+                return price
+        except Exception as exc:
+            log.error(f"get_spot {sym}: {exc}")
         return None
 
-    # ── Nearest expiry ────────────────────────────────────────────────────────
-    # Exchange map per index
-    _EXCHANGE = {
-        "NIFTY":      "NSE_FO",
-        "BANKNIFTY":  "NSE_FO",
-        "FINNIFTY":   "NSE_FO",
-        "MIDCPNIFTY": "NSE_FO",
-        "SENSEX":     "BSE_FO",
-        "BANKEX":     "BSE_FO",
-    }
+    def get_spot_batch(self, symbols: list) -> dict:
+        """Fetch ALL index spots in ONE API call - avoids per-index 429."""
+        keys, keymap = [], {}
+        for sym in symbols:
+            k = INDEX_KEYS.get(sym.upper())
+            if k:
+                keys.append(k)
+                keymap[k] = sym.upper()
+        if not keys:
+            return {}
+        result = {}
+        try:
+            resp = self._ltp(keys)
+            if resp and resp.data:
+                for raw_key, v in resp.data.items():
+                    price = float(v.last_price)
+                    # Match response key back to symbol
+                    for ik, sym in keymap.items():
+                        if ik.replace("|", "%7C") in raw_key or raw_key in ik or ik in raw_key:
+                            result[sym] = price
+                            self._spot_cache[sym] = (price, time.time())
+                            log.info(f"  {sym} spot = {price:,.2f}")
+                            break
+        except Exception as exc:
+            log.error(f"get_spot_batch failed: {exc} - falling back to sequential")
+            for sym in symbols:
+                p = self.get_spot(sym)
+                if p:
+                    result[sym] = p
+        return result
 
     def get_nearest_expiry(self, symbol: str = "NIFTY") -> str | None:
         try:
             instruments = self.load_instruments()
-            exchange = self._EXCHANGE.get(symbol.upper(), "NSE_FO")
-            expiries = sorted({
+            exchange    = _EXCHANGE.get(symbol.upper(), "NSE_FO")
+            expiries    = sorted({
                 i["expiry"] for i in instruments
                 if i.get("exchange") == exchange
                 and i.get("name", "").upper() == symbol.upper()
@@ -168,7 +199,7 @@ class Broker:
                 and i.get("expiry")
             })
             if not expiries:
-                log.error(f"No expiries found for {symbol} on {exchange}")
+                log.error(f"No expiries for {symbol} on {exchange}")
                 return None
             log.info(f"Nearest expiry {symbol}: {expiries[0]}")
             return expiries[0]
@@ -176,30 +207,26 @@ class Broker:
             log.error(f"get_nearest_expiry: {exc}")
             return None
 
-    # ── Option chain ──────────────────────────────────────────────────────────
-    def get_option_chain(self, symbol: str = "NIFTY", range_size: int = 1000):
+    def get_option_chain(self, symbol: str = "NIFTY", range_size: int = 1000,
+                         spot: float | None = None):
+        """Build option chain. Pass spot= to skip extra API call."""
         try:
             from config import SETTINGS
-            default_iv = SETTINGS.default_iv
-            default_oi = SETTINGS.default_oi
+            default_iv, default_oi = SETTINGS.default_iv, SETTINGS.default_oi
         except Exception:
-            default_iv = 0.18
-            default_oi = 50000
-
+            default_iv, default_oi = 0.18, 50000
         try:
             instruments = self.load_instruments()
-            spot = self.get_spot(symbol)
+            if spot is None:
+                spot = self.get_spot(symbol)
             if not spot:
+                log.warning(f"[{symbol}] No spot price available")
                 return [], None
-
             expiry = self.get_nearest_expiry(symbol)
             if not expiry:
                 return [], None
-
-            log.info(f"Building chain {symbol} | expiry={expiry} | spot={spot:,.0f}")
-
-            exchange = self._EXCHANGE.get(symbol.upper(), "NSE_FO")
-            options = [
+            exchange = _EXCHANGE.get(symbol.upper(), "NSE_FO")
+            options  = [
                 i for i in instruments
                 if i.get("exchange") == exchange
                 and i.get("name", "").upper() == symbol.upper()
@@ -208,31 +235,24 @@ class Broker:
                 and i.get("strike")
                 and abs(float(i["strike"]) - spot) <= range_size
             ]
-
             if not options:
-                log.error(f"No options found for {symbol} on {exchange} expiry={expiry}")
+                log.error(f"[{symbol}] No options on {exchange} expiry={expiry}")
                 return [], None
-
-            log.info(f"Found {len(options)} option contracts for {symbol}")
-
-            grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
-
-            # Batch LTP calls - up to 500 keys per request (Upstox limit)
-            BATCH = 200
-            keys_map = {opt["instrument_key"]: opt for opt in options}
-            all_keys = list(keys_map.keys())
-            ltp_data = {}
-            for i in range(0, len(all_keys), BATCH):
-                batch = all_keys[i:i+BATCH]
+            log.info(f"[{symbol}] {len(options)} contracts | expiry={expiry} | spot={spot:,.0f}")
+            # Batch LTP - all strikes in one call
+            all_keys = [o["instrument_key"] for o in options]
+            ltp_data: dict = {}
+            for i in range(0, len(all_keys), 200):
+                batch = all_keys[i:i+200]
                 try:
-                    resp = self._safe_ltp(batch)
+                    resp = self._ltp(batch)
                     if resp and resp.data:
                         for k, v in resp.data.items():
                             ltp_data[k] = float(v.last_price)
-                    time.sleep(0.1)
+                    log.info(f"[{symbol}] LTP batch {i//200+1}: {len(ltp_data)} prices")
                 except Exception as exc:
-                    log.warning(f"Batch LTP failed: {exc}")
-
+                    log.warning(f"[{symbol}] LTP batch failed: {exc}")
+            grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
             for opt in options:
                 strike = float(opt["strike"])
                 side   = opt.get("option_type")
@@ -242,104 +262,66 @@ class Broker:
                 ltp  = ltp_data.get(ikey)
                 if ltp is None:
                     continue
-
-                sym = opt.get("tradingsymbol", "").strip()
-                if not sym:
-                    sym = f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
-
+                sym = opt.get("tradingsymbol", "").strip() or \
+                      f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
                 grouped[strike]["strikePrice"] = strike
                 grouped[strike][side] = {
-                    "ltp":            ltp,
-                    "iv":             default_iv,
-                    "oi":             default_oi,
-                    "tradingsymbol":  sym,
-                    "instrument_key": ikey,
+                    "ltp": ltp, "iv": default_iv, "oi": default_oi,
+                    "tradingsymbol": sym, "instrument_key": ikey,
                 }
-
             chain = sorted(
                 [v for v in grouped.values() if v["strikePrice"] is not None],
                 key=lambda x: x["strikePrice"],
             )
-            log.info(f"Chain built: {len(chain)} strikes for {symbol}")
+            log.info(f"[{symbol}] Chain ready: {len(chain)} strikes")
             return chain, spot
-
         except Exception as exc:
-            log.error(f"get_option_chain: {exc}")
+            log.error(f"get_option_chain {symbol}: {exc}")
             return [], None
 
-    # ── Historical candles ────────────────────────────────────────────────────
-    def get_candles(self, symbol: str = "NIFTY", interval: str = "day",
-                    days: int = 365) -> "pd.DataFrame | None":
-        """
-        Fetch OHLCV candles from Upstox Historical Data API.
-        interval: 'day' | '30minute' | 'week' | 'month'
-        Returns a DataFrame with columns: timestamp, open, high, low, close, volume
-        """
+    def get_candles(self, symbol: str = "NIFTY", interval: str = "day", days: int = 365):
         import pandas as pd
-
         key = INDEX_KEYS.get(symbol.upper())
         if not key:
-            log.warning(f"get_candles: no index key for {symbol}")
             return None
-
-        # Upstox historical API uses instrument_key with | replaced by %7C
-        encoded_key = key.replace("|", "%7C")
-        to_date   = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-        url = (
-            f"https://api.upstox.com/v2/historical-candle/{encoded_key}"
-            f"/{interval}/{to_date}/{from_date}"
-        )
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Accept":        "application/json",
-        }
-
+        encoded = key.replace("|", "%7C")
+        to_dt   = datetime.now().strftime("%Y-%m-%d")
+        fr_dt   = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        url     = f"https://api.upstox.com/v2/historical-candle/{encoded}/{interval}/{to_dt}/{fr_dt}"
+        headers = {"Authorization": f"Bearer {self.access_token}", "Accept": "application/json"}
         for attempt in range(3):
             try:
-                resp = requests.get(url, headers=headers,
-                                    timeout=int(os.getenv("HTTP_TIMEOUT_SECONDS", "15")))
+                resp = requests.get(url, headers=headers, timeout=15)
                 resp.raise_for_status()
-                data = resp.json()
-                candles = data.get("data", {}).get("candles", [])
+                candles = resp.json().get("data", {}).get("candles", [])
                 if not candles:
-                    log.warning(f"get_candles: empty response for {symbol}")
                     return None
-
                 df = pd.DataFrame(candles,
-                                  columns=["timestamp", "open", "high", "low",
-                                           "close", "volume", "oi"])
+                    columns=["timestamp","open","high","low","close","volume","oi"])
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
-                df = (df.drop(columns=["oi"], errors="ignore")
-                        .sort_values("timestamp")
-                        .reset_index(drop=True))
-                log.info(f"get_candles: {symbol} {len(df)} bars via Upstox")
+                df = df.drop(columns=["oi"], errors="ignore").sort_values("timestamp").reset_index(drop=True)
+                log.info(f"get_candles: {symbol} {len(df)} bars")
                 return df
             except Exception as exc:
                 log.warning(f"get_candles attempt {attempt+1}: {exc}")
-                time.sleep(2)
+                time.sleep(3)
         return None
 
-    # ── Order placement ───────────────────────────────────────────────────────
     def place_order(self, instrument_key: str, side: str, qty: int,
                     price: float | None = None) -> dict | None:
         from config import SETTINGS
         if SETTINGS.dry_run:
-            log.info(f"[DRY RUN] place_order {side} {qty} @ {instrument_key}")
-            return {"dry_run": True, "instrument_key": instrument_key,
-                    "side": side, "qty": qty}
+            log.info(f"[DRY RUN] {side} {qty} @ {instrument_key}")
+            return {"dry_run": True, "instrument_key": instrument_key, "side": side, "qty": qty}
         for attempt in range(int(os.getenv("API_RETRIES", "3"))):
             try:
                 order = {
-                    "quantity":         qty,
-                    "product":          os.getenv("ORDER_PRODUCT", "D"),
-                    "validity":         os.getenv("ORDER_VALIDITY", "DAY"),
+                    "quantity": qty, "product": os.getenv("ORDER_PRODUCT", "D"),
+                    "validity": os.getenv("ORDER_VALIDITY", "DAY"),
                     "instrument_token": instrument_key,
-                    "order_type":       "MARKET" if price is None else "LIMIT",
-                    "transaction_type": side.upper(),
-                    "price":            price or 0,
-                    "tag":              os.getenv("ORDER_TAG", "algo_bot"),
+                    "order_type": "MARKET" if price is None else "LIMIT",
+                    "transaction_type": side.upper(), "price": price or 0,
+                    "tag": os.getenv("ORDER_TAG", "algo_bot"),
                 }
                 resp = self.order_api.place_order(order)
                 log.info(f"Order placed: {resp}")
@@ -355,4 +337,3 @@ class Broker:
 
     def logout(self) -> None:
         log.info("Broker logout")
-

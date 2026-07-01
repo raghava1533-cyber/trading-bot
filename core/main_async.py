@@ -327,8 +327,7 @@ def pick_best_index(broker, model, indices):
             candles = fetch_candles(ticker=cfg["yf_ticker"], broker=broker)
             if candles is None or candles.empty:
                 continue
-            regime      = predict_regime(model, candles)
-            chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"])
+            chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"], spot=spot)
             if not chain or not spot:
                 continue
             atm    = min(chain, key=lambda x: abs(x["strikePrice"] - spot))["strikePrice"]
@@ -417,7 +416,7 @@ async def handle_end_of_day(engine: PaperEngine, idx: str, spot, regime: str):
 # ── Main trading cycle ────────────────────────────────────────────────────────
 _last_closed_log = None
 
-async def run_cycle(broker, model, engine, idx):
+async def run_cycle(broker, model, engine, idx, spot: float | None = None):
     global _last_closed_log, _last_regime
     try:
         is_open, status_msg = market_status()
@@ -426,7 +425,7 @@ async def run_cycle(broker, model, engine, idx):
         if _is_near_close() or not is_open:
             chain_eod, spot_eod = None, None
             try:
-                chain_eod, spot_eod = broker.get_option_chain(idx, range_size=INDEX_CONFIG[idx]["range_size"])
+                chain_eod, spot_eod = broker.get_option_chain(idx, range_size=INDEX_CONFIG[idx]["range_size"], spot=spot)
             except Exception:
                 pass
             if chain_eod and spot_eod:
@@ -464,8 +463,7 @@ async def run_cycle(broker, model, engine, idx):
             log(f"[{idx}] No candle data", logging.WARNING)
             return
 
-        regime      = predict_regime(model, candles)
-        chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"])
+        chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"], spot=spot)
         if not chain:
             log(f"[{idx}] No option chain data", logging.WARNING)
             return
@@ -642,11 +640,17 @@ async def main():
     try:
         while True:
             try:
-                # Run all indices concurrently each cycle
-                await asyncio.gather(*[
-                    run_cycle(broker, model, engines[idx], idx)
-                    for idx in active_indices
-                ], return_exceptions=True)
+                # Pre-fetch ALL spot prices in ONE batch API call
+                # This avoids 3 separate calls hitting rate limit
+                log(f"Fetching spots for {active_indices}...")
+                spot_map = broker.get_spot_batch(active_indices)
+                log(f"Spots: { {k: f'{v:,.0f}' for k,v in spot_map.items()} }")
+
+                # Run indices SEQUENTIALLY - not concurrently
+                # Concurrent calls = multiple 429s simultaneously
+                for idx in active_indices:
+                    await run_cycle(broker, model, engines[idx], idx,
+                                    spot=spot_map.get(idx))
             except Exception as exc:
                 log(f"Loop error: {exc}", logging.ERROR)
                 traceback.print_exc()
