@@ -41,7 +41,9 @@ _STRATEGY_INCOMPATIBLE_REGIMES = {
 _CARRY_WIN_RATE_THRESHOLD = float(os.getenv("CARRY_WIN_RATE_THRESHOLD", "0.55"))
 
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging -----------------------------------------------------------------
+_log_buffer: list = []
+
 def setup_logging():
     logging.basicConfig(
         format="%(asctime)s | %(levelname)s | %(message)s",
@@ -54,6 +56,16 @@ def setup_logging():
 
 def log(msg, level=logging.INFO):
     logging.log(level, msg)
+    # Stream to Redis so /logs endpoint shows live output
+    try:
+        ts = dt.datetime.utcnow().strftime("%H:%M:%S")
+        prefix = "ERR" if level >= logging.ERROR else ("WRN" if level >= logging.WARNING else "INF")
+        _log_buffer.append(f"[{ts}] {prefix} {msg}")
+        if len(_log_buffer) > 200:
+            _log_buffer.pop(0)
+        set_data("bot_logs", json.dumps(_log_buffer[-100:]))
+    except Exception:
+        pass
 
 
 # ── IST time ──────────────────────────────────────────────────────────────────
@@ -427,6 +439,21 @@ async def run_cycle(broker, model, engine, idx):
             if _last_closed_log is None or (now - _last_closed_log).seconds >= 300:
                 log(f"[{idx}] {status_msg}")
                 _last_closed_log = now
+            # Write heartbeat so dashboard shows bot is alive even when market closed
+            set_data(f"regime_{idx}", _last_regime.get(idx, "SIDE"))
+            set_data("last_update", dt.datetime.now().isoformat(timespec="seconds"))
+            # Write zero PnL so dashboard shows Rs0 instead of dashes
+            try:
+                from infra.redis_bus import get_data as _gd
+                if not _gd(f"pnl_{idx}"):
+                    zero_pnl = {"realized":0,"unrealized":0,"total":0,
+                                "open_positions":0,"today_realized":0,"today_trades":0,
+                                "max_profit":0,"max_loss":0,"net_credit":0}
+                    set_data(f"pnl_{idx}", json.dumps(zero_pnl))
+                if not _gd(f"spot_{idx}"):
+                    set_data(f"spot_{idx}", "0")
+            except Exception:
+                pass
             return
 
         cfg      = INDEX_CONFIG[idx]
@@ -555,9 +582,14 @@ async def run_cycle(broker, model, engine, idx):
         else:
             log(f"[{idx}] {strategy}: no legs returned", logging.WARNING)
 
-    except Exception:
-        log(f"[{idx}] Cycle error", logging.ERROR)
-        traceback.print_exc()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        log(f"[{idx}] Cycle error: {exc}", logging.ERROR)
+        log(tb, logging.ERROR)
+        # Write error to Redis so dashboard can show it
+        set_data(f"cycle_error_{idx}", f"{exc} | {dt.datetime.now().isoformat()}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

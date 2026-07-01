@@ -97,6 +97,8 @@ export default function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
   const [showConfig, setShowConfig]     = useState(false);
   const [botAction, setBotAction]       = useState<string>("");
+  const [logs, setLogs]                 = useState<string[]>([]);
+  const [showLogs, setShowLogs]         = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   const applyState = useCallback((data: BotState) => {
@@ -121,6 +123,21 @@ export default function Dashboard() {
     connect();
     return () => { wsRef.current?.close(); clearTimeout(retryTimer); };
   }, [applyState]);
+
+  // Live logs fetch
+  useEffect(() => {
+    if (!showLogs) return;
+    const fetchLogs = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/logs`);
+        const d = await r.json();
+        if (d.lines) setLogs(d.lines.slice().reverse());
+      } catch {}
+    };
+    fetchLogs();
+    const id = setInterval(fetchLogs, 3000);
+    return () => clearInterval(id);
+  }, [showLogs]);
 
   // REST fallback
   useEffect(() => {
@@ -207,6 +224,13 @@ export default function Dashboard() {
             <span className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-500"}`} />
             {connected ? "Live" : "Reconnecting…"}
           </span>
+          <button onClick={() => setShowLogs(true)}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Logs
+          </button>
           <button onClick={() => setShowConfig(true)}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
             <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -628,6 +652,33 @@ export default function Dashboard() {
       )}
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showLogs && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{background:"rgba(0,0,0,0.85)"}}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl shadow-2xl flex flex-col" style={{maxHeight:"85vh"}}>
+            <div className="flex items-center justify-between p-4 border-b border-gray-800 flex-shrink-0">
+              <div>
+                <h2 className="text-base font-bold text-white">Bot Logs</h2>
+                <p className="text-xs text-gray-500">Live output from Render ? refreshes every 3s</p>
+              </div>
+              <button onClick={() => setShowLogs(false)} className="text-gray-500 hover:text-white text-2xl px-2">&times;</button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-4 bg-gray-950 rounded-b-2xl">
+              {logs.length === 0 ? (
+                <p className="text-gray-600 text-sm text-center py-8">No logs yet ? bot may be starting up</p>
+              ) : (
+                logs.map((line, i) => (
+                  <p key={i} className={`text-xs font-mono leading-5 ${
+                    line.includes("ERR") ? "text-red-400" :
+                    line.includes("WRN") ? "text-yellow-400" :
+                    line.includes("Cycle error") ? "text-red-400" :
+                    "text-gray-400"
+                  }`}>{line}</p>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {showConfig   && <ConfigPanel   onClose={() => setShowConfig(false)} />}
       <p className="mt-6 text-center text-xs text-gray-700">
         WebSocket live · REST fallback every 5s · {API_BASE}

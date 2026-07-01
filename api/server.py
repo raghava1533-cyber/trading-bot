@@ -636,6 +636,18 @@ a{{color:#63b3ed;text-decoration:none;display:block;padding:8px 0;border-bottom:
 </div></div></body></html>"""
 
 
+@app.get("/logs")
+def get_logs():
+    """Return last 100 bot log lines from Redis."""
+    try:
+        from infra.redis_bus import get_data
+        raw = get_data("bot_logs")
+        lines = json.loads(raw) if raw else []
+        return {"lines": lines, "count": len(lines), "bot_status": _bot_status}
+    except Exception as e:
+        return {"error": str(e), "lines": []}
+
+
 @app.get("/debug")
 def debug():
     """Show all Redis keys and bot state - for troubleshooting."""
