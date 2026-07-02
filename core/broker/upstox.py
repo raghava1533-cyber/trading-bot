@@ -263,27 +263,44 @@ class Broker:
             log.info(f"[{symbol}] {len(options)} contracts | expiry={expiry} | spot={spot:,.0f}")
             # Batch LTP - all strikes in one call
             all_keys = [o["instrument_key"] for o in options]
-            ltp_data: dict = {}
+            ltp_data: dict = {}   # normalized_key -> price
+
+            def _norm(k: str) -> str:
+                """Normalize instrument key for matching.
+                CSV uses pipe: NSE_FO|EQ|NSE|NIFTY...
+                SDK response uses colon: NSE_FO:EQ:NSE:NIFTY...
+                Normalize both to lowercase with pipe separator.
+                """
+                return k.replace(":", "|").replace("%7C", "|").lower().strip()
+
             for i in range(0, len(all_keys), 200):
                 batch = all_keys[i:i+200]
                 try:
                     resp = self._ltp(batch)
                     if resp and resp.data:
+                        # Log first key to understand format (once)
+                        if i == 0 and resp.data:
+                            sample_key = next(iter(resp.data.keys()))
+                            log.info(f"[{symbol}] Response key sample: {sample_key!r}")
+                            log.info(f"[{symbol}] Sent key sample: {batch[0]!r}")
                         for k, v in resp.data.items():
-                            ltp_data[k] = float(v.last_price)
-                    log.info(f"[{symbol}] LTP batch {i//200+1}: {len(ltp_data)} prices")
+                            ltp_data[_norm(k)] = float(v.last_price)
+                    log.info(f"[{symbol}] LTP batch {i//200+1}: {len(ltp_data)} prices fetched")
                 except Exception as exc:
                     log.warning(f"[{symbol}] LTP batch failed: {exc}")
+
             grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
+            matched = 0
             for opt in options:
                 strike = float(opt["strike"])
                 side   = opt.get("option_type")
                 if side not in ("CE", "PE"):
                     continue
                 ikey = opt["instrument_key"]
-                ltp  = ltp_data.get(ikey)
+                ltp  = ltp_data.get(_norm(ikey))
                 if ltp is None:
                     continue
+                matched += 1
                 sym = opt.get("tradingsymbol", "").strip() or \
                       f"{symbol}{expiry.replace('-','')}{int(strike)}{side}"
                 grouped[strike]["strikePrice"] = strike
@@ -295,7 +312,7 @@ class Broker:
                 [v for v in grouped.values() if v["strikePrice"] is not None],
                 key=lambda x: x["strikePrice"],
             )
-            log.info(f"[{symbol}] Chain ready: {len(chain)} strikes")
+            log.info(f"[{symbol}] Chain ready: {len(chain)} strikes (matched {matched}/{len(options)} contracts)")
             return chain, spot
         except Exception as exc:
             log.error(f"get_option_chain {symbol}: {exc}")

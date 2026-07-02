@@ -58,7 +58,7 @@ def log(msg, level=logging.INFO):
     logging.log(level, msg)
     # Stream to Redis so /logs endpoint shows live output
     try:
-        ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+        ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
         ts  = ist.strftime("%H:%M:%S")
         prefix = "ERR" if level >= logging.ERROR else ("WRN" if level >= logging.WARNING else "INF")
         _log_buffer.append(f"[{ts} IST] {prefix} {msg}")
@@ -71,7 +71,7 @@ def log(msg, level=logging.INFO):
 
 # ── IST time ──────────────────────────────────────────────────────────────────
 def _ist_now() -> dt.datetime:
-    return dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
 
 
 # ── Market status ─────────────────────────────────────────────────────────────
@@ -645,7 +645,7 @@ async def main():
                 # This avoids 3 separate calls hitting rate limit
                 log(f"Fetching spots for {active_indices}...")
                 spot_map = broker.get_spot_batch(active_indices)
-                log(f"Spots: { {k: f'{v:,.0f}' for k,v in spot_map.items()} }")
+                log(f"Spots: { {k: round(v,2) for k,v in spot_map.items()} }")
 
                 # Run indices SEQUENTIALLY - not concurrently
                 # Concurrent calls = multiple 429s simultaneously
