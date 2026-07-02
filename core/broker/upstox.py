@@ -109,7 +109,8 @@ class Broker:
             age = now - os.path.getmtime(self.instrument_file)
             if age < self._cache_ttl:
                 try:
-                    data = json.load(open(self.instrument_file))
+                    with open(self.instrument_file, encoding="utf-8") as _f:
+                        data = json.load(_f)
                     self._instrument_cache    = data
                     self._instrument_cache_ts = now
                     log.info(f"Instruments from cache: {len(data)} rows")
@@ -126,7 +127,8 @@ class Broker:
                 with gzip.GzipFile(fileobj=io.BytesIO(resp.content)) as gz:
                     content = gz.read().decode("utf-8")
                 data = list(csv.DictReader(io.StringIO(content)))
-                json.dump(data, open(self.instrument_file, "w"))
+                with open(self.instrument_file, "w", encoding="utf-8") as _fw:
+                    json.dump(data, _fw)
                 self._instrument_cache    = data
                 self._instrument_cache_ts = now
                 log.info(f"Instruments downloaded: {len(data)} rows")
@@ -168,10 +170,13 @@ class Broker:
             if k:
                 keys.append(k)
                 # Build multiple match variants for robust lookup
-                keymap[k]                      = sym.upper()
-                keymap[k.replace("|", "%7C")]  = sym.upper()
-                keymap[k.replace("|", "|")]    = sym.upper()
-                keymap[k.lower()]              = sym.upper()
+                # Upstox batch LTP responds with colon separator (NSE_INDEX:Nifty 50)
+                # but we send pipe separator (NSE_INDEX|Nifty 50)
+                keymap[k]                      = sym.upper()   # pipe: NSE_INDEX|Nifty 50
+                keymap[k.replace("|", ":")]    = sym.upper()   # colon: NSE_INDEX:Nifty 50
+                keymap[k.replace("|", "%7C")]  = sym.upper()   # url-encoded
+                keymap[k.lower()]              = sym.upper()   # lowercase
+                keymap[k.replace("|", ":").lower()] = sym.upper()  # colon lowercase
         if not keys:
             return {}
         result = {}

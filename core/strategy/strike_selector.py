@@ -171,13 +171,15 @@ def _find_best_spread(candidates, spot, strategy, sw, lot_size,
 
     buy = buy_candidates[0]
     m   = _margin_for_spread(sell_ltp, buy_ltp_fn(buy), sw, lot_size, spot)
-    logging.warning(
-        f"{strategy}: best available credit_ratio={m['credit_ratio']:.2%} "
-        f"(below min {min_credit_ratio:.2%}). "
-        f"R:R={m['rr_ratio']:.2f}  MaxProfit=Rs{m['max_profit']:,.0f}  "
-        f"MaxLoss=Rs{m['max_loss']:,.0f}. "
-        f"Consider raising TARGET_DELTA or lowering SPREAD_WIDTH_POINTS."
+    logging.info(
+        f"{strategy}: best credit_ratio={m['credit_ratio']:.2%} "
+        f"(min={min_credit_ratio:.2%}) R:R={m['rr_ratio']:.2f} "
+        f"MaxProfit=Rs{m['max_profit']:,.0f} MaxLoss=Rs{m['max_loss']:,.0f}"
     )
+    # Skip entry if credit is too low - not worth the risk
+    if m["credit_ratio"] < min_credit_ratio * 0.5:   # below 50% of minimum -> skip
+        logging.info(f"{strategy}: credit_ratio {m['credit_ratio']:.2%} too low, skipping entry")
+        return None
     return sell, buy, m
 
 

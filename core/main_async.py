@@ -9,6 +9,10 @@ Market close:  ML-based carry/close decision using trade history win-rate.
 import asyncio, datetime as dt, json, logging, os, subprocess, sys, tempfile, traceback
 from datetime import date
 
+# File-level lock: prevents concurrent STATE_FILE read-modify-write races
+# (NIFTY / BANKNIFTY / SENSEX tasks all call _write_state simultaneously)
+_state_lock: asyncio.Lock | None = None   # initialised in main() after event loop starts
+
 from data.candles import fetch_candles
 from execution.paper_engine import PaperEngine
 from broker.upstox import Broker
@@ -260,8 +264,13 @@ def launch_dashboard():
 
 
 # ── State writer ──────────────────────────────────────────────────────────────
-def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
-    """Write full bot state to STATE_FILE + Redis for dashboard."""
+async def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
+    """Write full bot state to STATE_FILE + Redis for dashboard.
+
+    Uses _state_lock to prevent concurrent read-modify-write races when
+    NIFTY / BANKNIFTY / SENSEX tasks all call this simultaneously.
+    Also merges all_positions across indices so no index overwrites another.
+    """
     try:
         pnl = engine.get_pnl()
         positions_out = [
@@ -279,32 +288,50 @@ def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
             }
             for p in engine.positions
         ]
-        data = {}
-        if os.path.exists(STATE_FILE):
+        lock = _state_lock or asyncio.Lock()
+        async with lock:
+            # --- Read existing state (all indices) ---
+            data = {}
+            if os.path.exists(STATE_FILE):
+                try:
+                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+
+            # --- Merge all_positions: keep other indices, update this one ---
+            existing_ap_raw = data.get("all_positions", "{}")
             try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                all_pos = json.loads(existing_ap_raw) if isinstance(existing_ap_raw, str) else existing_ap_raw
+                if not isinstance(all_pos, dict):
+                    all_pos = {}
             except Exception:
-                data = {}
-        data[f"spot_{idx}"]   = str(spot)
-        data[f"regime_{idx}"] = regime
-        data[f"pnl_{idx}"]    = json.dumps(pnl, default=str)
-        data["all_positions"] = json.dumps({idx: positions_out}, default=str)
-        data["last_update"]   = dt.datetime.now().isoformat(timespec="seconds")
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, default=str)
+                all_pos = {}
+            all_pos[idx] = positions_out
+
+            data[f"spot_{idx}"]   = str(spot)
+            data[f"regime_{idx}"] = regime
+            data[f"pnl_{idx}"]    = json.dumps(pnl, default=str)
+            data["all_positions"] = json.dumps(all_pos, default=str)
+            data["last_update"]   = dt.datetime.now().isoformat(timespec="seconds")
+
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, default=str)
+
+        # --- Redis (no file lock needed, Redis is atomic) ---
         set_data(f"spot_{idx}",   str(spot))
         set_data(f"regime_{idx}", regime)
         set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
-        # Merge all_positions across indices (don't overwrite other indices)
         try:
             from infra.redis_bus import get_data as _gd
             existing_raw = _gd("all_positions")
-            all_pos = json.loads(existing_raw) if existing_raw else {}
+            redis_pos = json.loads(existing_raw) if existing_raw else {}
+            if not isinstance(redis_pos, dict):
+                redis_pos = {}
         except Exception:
-            all_pos = {}
-        all_pos[idx] = positions_out
-        set_data("all_positions", json.dumps(all_pos, default=str))
+            redis_pos = {}
+        redis_pos[idx] = positions_out
+        set_data("all_positions", json.dumps(redis_pos, default=str))
         set_data("last_update",   data["last_update"])
     except Exception as exc:
         log(f"_write_state: {exc}", logging.WARNING)
@@ -411,7 +438,7 @@ async def handle_end_of_day(engine: PaperEngine, idx: str, spot, regime: str):
             engine.close_position(pos, exit_reason="EOD_CLOSE")
             log(f"[{idx}] Position CLOSED at end of day  "
                 f"PnL:Rs{pos.get('unrealized',0):+,.0f}")
-    _write_state(engine, idx, spot, regime)
+    await _write_state(engine, idx, spot, regime)
 
 
 # ── Main trading cycle ────────────────────────────────────────────────────────
@@ -487,10 +514,10 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
             for pos in conflicting:
                 engine.close_position(pos, exit_reason=f"REGIME_CHANGE_{prev_regime}_TO_{regime}")
             pnl = engine.get_pnl()
-            _write_state(engine, idx, spot, regime)
+            await _write_state(engine, idx, spot, regime)
 
         _last_regime[idx] = regime
-        _write_state(engine, idx, spot, regime)
+        await _write_state(engine, idx, spot, regime)
 
         # ── Terminal log ──────────────────────────────────────────────────────
         ist      = _ist_now()
@@ -520,40 +547,53 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
         if pnl["unrealized"] <= STOP_LOSS:
             log(f"[{idx}] STOP LOSS hit: Rs{pnl['unrealized']:,.0f}", logging.WARNING)
             engine.close_all(exit_reason="STOP_LOSS")
-            _write_state(engine, idx, spot, regime)
+            await _write_state(engine, idx, spot, regime)
             return
         if pnl["unrealized"] >= TARGET:
             log(f"[{idx}] TARGET hit: Rs{pnl['unrealized']:,.0f}")
             engine.close_all(exit_reason="TARGET")
-            _write_state(engine, idx, spot, regime)
+            await _write_state(engine, idx, spot, regime)
             return
 
         # ── Check close commands from dashboard ───────────────────────────────
         try:
             if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    sdata = json.load(f)
-                cmds = sdata.get("close_commands", [])
-                if isinstance(cmds, str):
-                    cmds = json.loads(cmds)
-                remaining = []
-                for cmd in cmds:
-                    if cmd.get("index") == idx and cmd.get("action") == "close_all":
-                        log(f"[{idx}] Manual close command received from dashboard")
-                        engine.close_all(exit_reason="MANUAL_DASHBOARD")
-                        _write_state(engine, idx, spot, regime)
-                    elif cmd.get("action") == "close_position":
-                        pos_idx = cmd.get("position_index", -1)
-                        open_positions = [p for p in engine.positions if p["open"]]
-                        if 0 <= pos_idx < len(open_positions):
-                            engine.close_position(open_positions[pos_idx],
-                                                  exit_reason="MANUAL_DASHBOARD")
-                            _write_state(engine, idx, spot, regime)
-                    else:
-                        remaining.append(cmd)
-                sdata["close_commands"] = remaining
-                with open(STATE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(sdata, f, default=str)
+                acted = False
+                lock = _state_lock or asyncio.Lock()
+                async with lock:
+                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                        sdata = json.load(f)
+                    cmds = sdata.get("close_commands", [])
+                    # Normalise: dashboard may store as JSON string or list
+                    if isinstance(cmds, str):
+                        try:
+                            cmds = json.loads(cmds)
+                        except Exception:
+                            cmds = []
+                    if not isinstance(cmds, list):
+                        cmds = []
+                    remaining = []
+                    for cmd in cmds:
+                        if not isinstance(cmd, dict):
+                            continue
+                        if cmd.get("index") == idx and cmd.get("action") == "close_all":
+                            log(f"[{idx}] Manual close command received from dashboard")
+                            engine.close_all(exit_reason="MANUAL_DASHBOARD")
+                            acted = True
+                        elif cmd.get("action") == "close_position" and cmd.get("index") == idx:
+                            pos_idx = cmd.get("position_index", -1)
+                            open_positions = [p for p in engine.positions if p["open"]]
+                            if 0 <= pos_idx < len(open_positions):
+                                engine.close_position(open_positions[pos_idx],
+                                                      exit_reason="MANUAL_DASHBOARD")
+                                acted = True
+                        else:
+                            remaining.append(cmd)
+                    sdata["close_commands"] = remaining
+                    with open(STATE_FILE, "w", encoding="utf-8") as f:
+                        json.dump(sdata, f, default=str)
+                if acted:
+                    await _write_state(engine, idx, spot, regime)
         except Exception as exc:
             log(f"[{idx}] Close command check failed: {exc}", logging.WARNING)
 
@@ -579,9 +619,9 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
                               spread_width=SPREAD_WIDTH)
         if legs:
             await execute_trade(engine, idx, strategy, legs, chain)
-            _write_state(engine, idx, spot, regime)
+            await _write_state(engine, idx, spot, regime)
         else:
-            log(f"[{idx}] {strategy}: no legs returned", logging.WARNING)
+            log(f"[{idx}] {strategy}: no valid legs (credit too low or no chain data)")
 
     except asyncio.CancelledError:
         raise
@@ -634,6 +674,9 @@ async def main():
     log("-" * 60)
 
     # One PaperEngine per index
+    global _state_lock
+    _state_lock = asyncio.Lock()   # create inside running event loop
+
     engines = {idx: PaperEngine() for idx in active_indices}
     for idx in active_indices:
         trade_count[idx]     = 0
