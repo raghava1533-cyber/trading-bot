@@ -261,43 +261,38 @@ class Broker:
                 log.error(f"[{symbol}] No options on {exchange} expiry={expiry}")
                 return [], None
             log.info(f"[{symbol}] {len(options)} contracts | expiry={expiry} | spot={spot:,.0f}")
-            # Batch LTP - all strikes in one call
-            all_keys = [o["instrument_key"] for o in options]
-            ltp_data: dict = {}   # normalized_key -> price
+            # Send instrument_key (NSE_FO|44699) to API
+            # API responds with exchange:tradingsymbol (NSE_FO:NIFTY2670725350PE)
+            # Build reverse map: "EXCHANGE:TRADINGSYMBOL" -> option row
+            exchange = _EXCHANGE.get(symbol.upper(), "NSE_FO")
+            resp_key_to_opt = {
+                f"{exchange}:{o['tradingsymbol']}": o for o in options
+            }
+            all_ikeys = [o["instrument_key"] for o in options]
 
-            def _norm(k: str) -> str:
-                """Normalize instrument key for matching.
-                CSV uses pipe: NSE_FO|EQ|NSE|NIFTY...
-                SDK response uses colon: NSE_FO:EQ:NSE:NIFTY...
-                Normalize both to lowercase with pipe separator.
-                """
-                return k.replace(":", "|").replace("%7C", "|").lower().strip()
-
-            for i in range(0, len(all_keys), 200):
-                batch = all_keys[i:i+200]
+            ltp_data: dict = {}   # "EXCHANGE:TRADINGSYMBOL" -> price
+            for i in range(0, len(all_ikeys), 200):
+                batch = all_ikeys[i:i+200]
                 try:
                     resp = self._ltp(batch)
                     if resp and resp.data:
-                        # Log first key to understand format (once)
-                        if i == 0 and resp.data:
-                            sample_key = next(iter(resp.data.keys()))
-                            log.info(f"[{symbol}] Response key sample: {sample_key!r}")
-                            log.info(f"[{symbol}] Sent key sample: {batch[0]!r}")
+                        if i == 0:
+                            sample_resp = next(iter(resp.data.keys()))
+                            log.info(f"[{symbol}] Sent: {batch[0]!r} -> Got: {sample_resp!r}")
                         for k, v in resp.data.items():
-                            ltp_data[_norm(k)] = float(v.last_price)
+                            ltp_data[k] = float(v.last_price)
                     log.info(f"[{symbol}] LTP batch {i//200+1}: {len(ltp_data)} prices fetched")
                 except Exception as exc:
                     log.warning(f"[{symbol}] LTP batch failed: {exc}")
 
             grouped: dict = defaultdict(lambda: {"strikePrice": None, "CE": {}, "PE": {}})
             matched = 0
-            for opt in options:
+            for resp_key, opt in resp_key_to_opt.items():
                 strike = float(opt["strike"])
                 side   = opt.get("option_type")
                 if side not in ("CE", "PE"):
                     continue
-                ikey = opt["instrument_key"]
-                ltp  = ltp_data.get(_norm(ikey))
+                ltp = ltp_data.get(resp_key)
                 if ltp is None:
                     continue
                 matched += 1
@@ -306,7 +301,7 @@ class Broker:
                 grouped[strike]["strikePrice"] = strike
                 grouped[strike][side] = {
                     "ltp": ltp, "iv": default_iv, "oi": default_oi,
-                    "tradingsymbol": sym, "instrument_key": ikey,
+                    "tradingsymbol": sym, "instrument_key": opt["instrument_key"],
                 }
             chain = sorted(
                 [v for v in grouped.values() if v["strikePrice"] is not None],

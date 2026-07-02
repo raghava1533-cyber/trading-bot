@@ -464,6 +464,8 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
             log(f"[{idx}] No candle data", logging.WARNING)
             return
 
+        regime = predict_regime(model, candles)
+
         chain, spot = broker.get_option_chain(idx, range_size=cfg["range_size"], spot=spot)
         if not chain:
             log(f"[{idx}] No option chain data", logging.WARNING)
