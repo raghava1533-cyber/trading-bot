@@ -699,6 +699,27 @@ def chain_test(symbol: str = "NIFTY"):
     return result
 
 
+@app.get("/spot-test")
+def spot_test():
+    """Test spot batch call - shows raw API response keys."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
+    try:
+        from broker.upstox import Broker, INDEX_KEYS
+        b = Broker()
+        keys = list(INDEX_KEYS.values())
+        log.info(f"Testing LTP with keys: {keys}")
+        resp = b._ltp(keys)
+        if resp and resp.data:
+            raw_keys = list(resp.data.keys())
+            prices   = {k: float(v.last_price) for k, v in resp.data.items()}
+            return {"ok": True, "raw_keys": raw_keys, "prices": prices,
+                    "expected_keys": keys}
+        return {"ok": False, "error": "No data in response"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/debug")
 def debug():
     """Show all Redis keys and bot state - for troubleshooting."""
