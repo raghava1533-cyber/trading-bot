@@ -157,13 +157,21 @@ class Broker:
         return None
 
     def get_spot_batch(self, symbols: list) -> dict:
-        """Fetch ALL index spots in ONE API call - avoids per-index 429."""
+        """
+        Fetch spot prices for all symbols.
+        Tries a single batch call first; if key matching fails,
+        falls back to sequential calls (rate limiter handles pacing).
+        """
         keys, keymap = [], {}
         for sym in symbols:
             k = INDEX_KEYS.get(sym.upper())
             if k:
                 keys.append(k)
-                keymap[k] = sym.upper()
+                # Build multiple match variants for robust lookup
+                keymap[k]                      = sym.upper()
+                keymap[k.replace("|", "%7C")]  = sym.upper()
+                keymap[k.replace("|", "|")]    = sym.upper()
+                keymap[k.lower()]              = sym.upper()
         if not keys:
             return {}
         result = {}
@@ -172,19 +180,33 @@ class Broker:
             if resp and resp.data:
                 for raw_key, v in resp.data.items():
                     price = float(v.last_price)
-                    # Match response key back to symbol
-                    for ik, sym in keymap.items():
-                        if ik.replace("|", "%7C") in raw_key or raw_key in ik or ik in raw_key:
-                            result[sym] = price
-                            self._spot_cache[sym] = (price, time.time())
-                            log.info(f"  {sym} spot = {price:,.2f}")
-                            break
+                    # Try exact match first
+                    sym = keymap.get(raw_key)
+                    if not sym:
+                        # Try partial match - find which INDEX_KEY is contained in raw_key
+                        for ik, s in keymap.items():
+                            clean_ik  = ik.replace("%7C", "|").lower()
+                            clean_raw = raw_key.replace("%7C", "|").lower()
+                            if clean_ik in clean_raw or clean_raw in clean_ik:
+                                sym = s
+                                break
+                    if sym:
+                        result[sym] = price
+                        self._spot_cache[sym] = (price, time.time())
+                        log.info(f"  {sym} spot = {price:,.2f}")
+                    else:
+                        log.warning(f"  Could not match key: {raw_key}")
         except Exception as exc:
-            log.error(f"get_spot_batch failed: {exc} - falling back to sequential")
-            for sym in symbols:
+            log.error(f"get_spot_batch failed: {exc}")
+
+        # For any symbols not matched, fetch individually
+        missing = [s for s in symbols if s.upper() not in result]
+        if missing:
+            log.info(f"  Fetching individually: {missing}")
+            for sym in missing:
                 p = self.get_spot(sym)
                 if p:
-                    result[sym] = p
+                    result[sym.upper()] = p
         return result
 
     def get_nearest_expiry(self, symbol: str = "NIFTY") -> str | None:

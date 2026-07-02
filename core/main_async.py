@@ -58,9 +58,10 @@ def log(msg, level=logging.INFO):
     logging.log(level, msg)
     # Stream to Redis so /logs endpoint shows live output
     try:
-        ts = dt.datetime.utcnow().strftime("%H:%M:%S")
+        ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
+        ts  = ist.strftime("%H:%M:%S")
         prefix = "ERR" if level >= logging.ERROR else ("WRN" if level >= logging.WARNING else "INF")
-        _log_buffer.append(f"[{ts}] {prefix} {msg}")
+        _log_buffer.append(f"[{ts} IST] {prefix} {msg}")
         if len(_log_buffer) > 200:
             _log_buffer.pop(0)
         set_data("bot_logs", json.dumps(_log_buffer[-100:]))
