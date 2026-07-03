@@ -28,12 +28,8 @@ from config import SETTINGS
 
 SPREAD_WIDTH = SETTINGS.spread_width_points
 
-# Minimum credit as a fraction of spread width.
-# credit_per_share must be >= MIN_CREDIT_RATIO * spread_width_pts
-# e.g. 0.25 means credit must be >= 25% of spread (R:R better than 1:3)
-# Minimum credit ratio: 5% of spread width (Rs10 on 200pt spread)
-# Set MIN_CREDIT_RATIO=0 in .env to disable the check entirely
-MIN_CREDIT_RATIO = float(getattr(SETTINGS, "min_credit_ratio", 0.05))
+# No minimum credit ratio - always take best available spread
+MIN_CREDIT_RATIO = 0.0
 
 
 def _bs_delta(S, K, T, r, sigma, opt_type):
@@ -93,21 +89,18 @@ def _margin_for_spread(sell_ltp, buy_ltp, sw_pts, lot_size=75, spot=None):
 
 
 def _find_best_spread(candidates, spot, strategy, sw, lot_size,
-                      target_delta, min_credit_ratio):
+                      target_delta, min_credit_ratio=0.0):
     """
-    Find the best sell+buy pair that satisfies the minimum credit ratio.
-    Tries progressively wider spreads if the first attempt fails.
-
-    Returns (sell_candidate, buy_candidate, margin_info) or None.
+    Find best sell+buy pair by delta proximity.
+    No credit ratio filter - always takes best available spread.
+    Only skips if sell_ltp <= buy_ltp (zero/negative credit = no point entering).
     """
     if strategy == "BEAR_CALL":
-        # Sell: OTM call closest to target_delta
         otm_sells = sorted(
             [c for c in candidates if c["strike"] > spot],
             key=lambda x: abs(x["ce_delta"] - target_delta),
         )
     else:  # BULL_PUT
-        # Sell: OTM put closest to target_delta
         otm_sells = sorted(
             [c for c in candidates if c["strike"] < spot],
             key=lambda x: abs(abs(x["pe_delta"]) - target_delta),
@@ -116,73 +109,40 @@ def _find_best_spread(candidates, spot, strategy, sw, lot_size,
     if not otm_sells:
         return None
 
-    # Try each sell candidate (closest delta first)
-    for sell in otm_sells[:5]:
+    # Try up to 10 sell candidates (closest delta first), pick first with positive credit
+    for sell in otm_sells[:10]:
         if strategy == "BEAR_CALL":
-            # Buy leg: first strike >= sell + sw
             buy_candidates = sorted(
                 [c for c in candidates if c["strike"] >= sell["strike"] + sw],
                 key=lambda x: x["strike"],
             )
-            sell_ltp = sell["ce_ltp"]
+            sell_ltp   = sell["ce_ltp"]
             buy_ltp_fn = lambda b: b["ce_ltp"]
         else:
-            # Buy leg: first strike <= sell - sw
             buy_candidates = sorted(
                 [c for c in candidates if c["strike"] <= sell["strike"] - sw],
                 key=lambda x: x["strike"], reverse=True,
             )
-            sell_ltp = sell["pe_ltp"]
+            sell_ltp   = sell["pe_ltp"]
             buy_ltp_fn = lambda b: b["pe_ltp"]
 
         if not buy_candidates:
             continue
 
-        buy = buy_candidates[0]
+        buy     = buy_candidates[0]
         buy_ltp = buy_ltp_fn(buy)
-        m = _margin_for_spread(sell_ltp, buy_ltp, sw, lot_size, spot)
+        m       = _margin_for_spread(sell_ltp, buy_ltp, sw, lot_size, spot)
 
-        if m["credit_ratio"] >= min_credit_ratio:
+        if m["credit_per_share"] > 0:
+            logging.info(
+                f"{strategy}: sell={sell['strike']:.0f} buy={buy['strike']:.0f} "
+                f"credit=Rs{m['credit_per_share']:.2f}/share "
+                f"MaxProfit=Rs{m['max_profit']:,.0f} MaxLoss=Rs{m['max_loss']:,.0f}"
+            )
             return sell, buy, m
 
-        # Credit too low — log and try next sell strike
-        logging.debug(
-            f"{strategy}: sell={sell['strike']} credit_ratio={m['credit_ratio']:.2%} "
-            f"< min={min_credit_ratio:.2%}, trying next strike"
-        )
-
-    # No strike passed the ratio check — return best available with a warning
-    sell = otm_sells[0]
-    if strategy == "BEAR_CALL":
-        buy_candidates = sorted(
-            [c for c in candidates if c["strike"] >= sell["strike"] + sw],
-            key=lambda x: x["strike"],
-        )
-        sell_ltp = sell["ce_ltp"]
-        buy_ltp_fn = lambda b: b["ce_ltp"]
-    else:
-        buy_candidates = sorted(
-            [c for c in candidates if c["strike"] <= sell["strike"] - sw],
-            key=lambda x: x["strike"], reverse=True,
-        )
-        sell_ltp = sell["pe_ltp"]
-        buy_ltp_fn = lambda b: b["pe_ltp"]
-
-    if not buy_candidates:
-        return None
-
-    buy = buy_candidates[0]
-    m   = _margin_for_spread(sell_ltp, buy_ltp_fn(buy), sw, lot_size, spot)
-    logging.info(
-        f"{strategy}: credit_ratio={m['credit_ratio']:.2%} "
-        f"(min={min_credit_ratio:.2%}) R:R={m['rr_ratio']:.2f} "
-        f"MaxProfit=Rs{m['max_profit']:,.0f} MaxLoss=Rs{m['max_loss']:,.0f}"
-    )
-    # If credit is literally zero or negative, skip (no point entering)
-    if m["credit_per_share"] <= 0:
-        logging.info(f"{strategy}: zero/negative credit, skipping entry")
-        return None
-    return sell, buy, m
+    logging.warning(f"{strategy}: no spread with positive credit found in chain")
+    return None
 
 
 def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
@@ -213,7 +173,7 @@ def select_strikes(chain, spot, strategy, T=0.1, r=0.06, target_delta=0.30,
 
     if strategy in ("BEAR_CALL", "BULL_PUT"):
         result = _find_best_spread(candidates, spot, strategy, sw,
-                                   lot_size, target_delta, mcr)
+                                   lot_size, target_delta)
         if result is None:
             return []
         sell, buy, m = result

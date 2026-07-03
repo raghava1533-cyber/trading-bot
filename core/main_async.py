@@ -501,16 +501,25 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
         engine.mark_to_market(chain)
         pnl = engine.get_pnl()
 
-        # ── Regime change detection ───────────────────────────────────────────
+        # ── Regime detection + conflict close ────────────────────────────────────────
         prev_regime    = _last_regime.get(idx)
         regime_changed = prev_regime is not None and prev_regime != regime
-        if regime_changed:
-            log(f"[{idx}] *** REGIME CHANGE: {prev_regime} -> {regime} ***", logging.WARNING)
 
+        # Log regime every cycle so it is always visible
+        strategy_for_regime = _REGIME_TO_STRATEGY.get(regime, "?")
+        if regime_changed:
+            log(f"[{idx}] *** REGIME CHANGE: {prev_regime} -> {regime} "
+                f"| New strategy: {strategy_for_regime} ***", logging.WARNING)
+        else:
+            log(f"[{idx}] Regime: {regime} | Strategy: {strategy_for_regime} "
+                f"| Prev: {prev_regime or 'first-cycle'}")
+
+        # Close any positions whose strategy conflicts with the new regime
         conflicting = [p for p in engine.positions if p["open"] and _regime_conflicts(p, regime)]
         if conflicting:
             strats = ", ".join(p["strategy"] for p in conflicting)
-            log(f"[{idx}] Closing {len(conflicting)} incompatible position(s) [{strats}]", logging.WARNING)
+            log(f"[{idx}] Closing {len(conflicting)} conflicting position(s) [{strats}] "
+                f"because regime={regime}", logging.WARNING)
             for pos in conflicting:
                 engine.close_position(pos, exit_reason=f"REGIME_CHANGE_{prev_regime}_TO_{regime}")
             pnl = engine.get_pnl()

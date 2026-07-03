@@ -167,6 +167,33 @@ async def _broadcast_loop():
         await asyncio.sleep(1)
 
 
+async def _self_ping_loop():
+    """
+    Ping our own /ping endpoint every 10 minutes.
+    Render free tier sleeps after 15 min of inactivity.
+    This keeps the service alive 24/7 so Vercel always connects on first try.
+    """
+    import httpx
+    await asyncio.sleep(60)  # wait 60s for server to fully start
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not render_url:
+        # Try to detect our own URL from common Render env vars
+        render_url = os.getenv("RENDER_SERVICE_URL", "").strip().rstrip("/")
+    if not render_url:
+        log.info("Self-ping: no RENDER_EXTERNAL_URL set, skipping keep-alive loop")
+        return
+    ping_url = f"{render_url}/ping"
+    log.info(f"Self-ping loop started: {ping_url} every 10 min")
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(ping_url)
+                log.debug(f"Self-ping: {r.status_code}")
+        except Exception as exc:
+            log.debug(f"Self-ping failed (non-critical): {exc}")
+        await asyncio.sleep(600)  # 10 minutes
+
+
 # -- Lifespan -----------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -190,6 +217,7 @@ async def lifespan(app: FastAPI):
     if os.getenv("BOT_ENABLED", "true").lower() == "true":
         await _start_bot()
     asyncio.create_task(_broadcast_loop())
+    asyncio.create_task(_self_ping_loop())
     yield
 
 
