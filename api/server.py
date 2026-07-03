@@ -836,6 +836,22 @@ class CloseCmd(BaseModel):
 def close_position(cmd: CloseCmd):
     import tempfile
     STATE_FILE = os.path.join(tempfile.gettempdir(), "trading_bot_state.json")
+    new_cmd = {
+        "index":          cmd.index.upper(),
+        "action":         cmd.action,
+        "position_index": cmd.position_index,
+    }
+    # Write to Redis so local bot can read it (bot may not share STATE_FILE with Render)
+    try:
+        existing_raw = get_data("close_commands")
+        existing = json.loads(existing_raw) if existing_raw else []
+        if not isinstance(existing, list):
+            existing = []
+        existing.append(new_cmd)
+        set_data("close_commands", json.dumps(existing))
+    except Exception as e:
+        log.warning(f"close_position redis write: {e}")
+    # Also write to STATE_FILE (for local bot)
     try:
         data = {}
         if os.path.exists(STATE_FILE):
@@ -843,18 +859,19 @@ def close_position(cmd: CloseCmd):
                 data = json.load(f)
         cmds = data.get("close_commands", [])
         if isinstance(cmds, str):
-            cmds = json.loads(cmds)
-        cmds.append({
-            "index":          cmd.index.upper(),
-            "action":         cmd.action,
-            "position_index": cmd.position_index,
-        })
+            try:
+                cmds = json.loads(cmds)
+            except Exception:
+                cmds = []
+        if not isinstance(cmds, list):
+            cmds = []
+        cmds.append(new_cmd)
         data["close_commands"] = cmds
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        return {"status": "ok", "message": f"Close command queued for {cmd.index}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning(f"close_position state_file write: {e}")
+    return {"status": "ok", "message": f"Close command queued for {cmd.index}"}
 
 
 @app.websocket("/ws")

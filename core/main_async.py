@@ -273,6 +273,8 @@ async def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
     """
     try:
         pnl = engine.get_pnl()
+        # Only write OPEN positions to Redis/STATE_FILE
+        # Closed positions live in trade_history, not all_positions
         positions_out = [
             {
                 "strategy":    p["strategy"],
@@ -287,6 +289,7 @@ async def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
                 "legs":        p.get("legs", []),
             }
             for p in engine.positions
+            if p["open"]   # only open positions
         ]
         lock = _state_lock or asyncio.Lock()
         async with lock:
@@ -564,45 +567,65 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
             await _write_state(engine, idx, spot, regime)
             return
 
-        # ── Check close commands from dashboard ───────────────────────────────
+        # ── Check close commands (Redis + STATE_FILE) ───────────────────────────────
         try:
-            if os.path.exists(STATE_FILE):
-                acted = False
-                lock = _state_lock or asyncio.Lock()
-                async with lock:
-                    with open(STATE_FILE, "r", encoding="utf-8") as f:
-                        sdata = json.load(f)
-                    cmds = sdata.get("close_commands", [])
-                    # Normalise: dashboard may store as JSON string or list
-                    if isinstance(cmds, str):
-                        try:
-                            cmds = json.loads(cmds)
-                        except Exception:
-                            cmds = []
-                    if not isinstance(cmds, list):
-                        cmds = []
-                    remaining = []
-                    for cmd in cmds:
-                        if not isinstance(cmd, dict):
-                            continue
-                        if cmd.get("index") == idx and cmd.get("action") == "close_all":
-                            log(f"[{idx}] Manual close command received from dashboard")
-                            engine.close_all(exit_reason="MANUAL_DASHBOARD")
+            acted = False
+
+            def _process_cmds(cmds: list) -> list:
+                nonlocal acted
+                remaining = []
+                for cmd in cmds:
+                    if not isinstance(cmd, dict):
+                        continue
+                    if cmd.get("index") == idx and cmd.get("action") == "close_all":
+                        log(f"[{idx}] Manual CLOSE ALL from dashboard")
+                        engine.close_all(exit_reason="MANUAL_DASHBOARD")
+                        acted = True
+                    elif cmd.get("action") == "close_position" and cmd.get("index") == idx:
+                        pos_idx = cmd.get("position_index", -1)
+                        open_positions = [p for p in engine.positions if p["open"]]
+                        if 0 <= pos_idx < len(open_positions):
+                            engine.close_position(open_positions[pos_idx],
+                                                  exit_reason="MANUAL_DASHBOARD")
                             acted = True
-                        elif cmd.get("action") == "close_position" and cmd.get("index") == idx:
-                            pos_idx = cmd.get("position_index", -1)
-                            open_positions = [p for p in engine.positions if p["open"]]
-                            if 0 <= pos_idx < len(open_positions):
-                                engine.close_position(open_positions[pos_idx],
-                                                      exit_reason="MANUAL_DASHBOARD")
-                                acted = True
                         else:
                             remaining.append(cmd)
-                    sdata["close_commands"] = remaining
-                    with open(STATE_FILE, "w", encoding="utf-8") as f:
-                        json.dump(sdata, f, default=str)
-                if acted:
-                    await _write_state(engine, idx, spot, regime)
+                    else:
+                        remaining.append(cmd)
+                return remaining
+
+            # 1. Redis close_commands (written by Vercel /close -> Render API)
+            try:
+                from infra.redis_bus import get_data as _gd_cc, set_data as _sd_cc
+                raw_cc = _gd_cc("close_commands")
+                if raw_cc:
+                    cmds_redis = json.loads(raw_cc) if isinstance(raw_cc, str) else raw_cc
+                    if isinstance(cmds_redis, list) and cmds_redis:
+                        _sd_cc("close_commands", json.dumps(_process_cmds(cmds_redis)))
+            except Exception as exc:
+                log(f"[{idx}] Redis close cmd: {exc}", logging.WARNING)
+
+            # 2. STATE_FILE close_commands (written by local dashboard)
+            lock = _state_lock or asyncio.Lock()
+            async with lock:
+                if os.path.exists(STATE_FILE):
+                    try:
+                        with open(STATE_FILE, "r", encoding="utf-8") as f:
+                            sdata = json.load(f)
+                        cmds_file = sdata.get("close_commands", [])
+                        if isinstance(cmds_file, str):
+                            try: cmds_file = json.loads(cmds_file)
+                            except Exception: cmds_file = []
+                        if not isinstance(cmds_file, list): cmds_file = []
+                        if cmds_file:
+                            sdata["close_commands"] = _process_cmds(cmds_file)
+                            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                                json.dump(sdata, f, default=str)
+                    except Exception as exc:
+                        log(f"[{idx}] STATE_FILE close cmd: {exc}", logging.WARNING)
+
+            if acted:
+                await _write_state(engine, idx, spot, regime)
         except Exception as exc:
             log(f"[{idx}] Close command check failed: {exc}", logging.WARNING)
 

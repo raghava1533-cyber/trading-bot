@@ -92,7 +92,13 @@ class PaperEngine:
             open_pos = [p for p in positions if p.get("open")]
             if open_pos:
                 log.info(f"Restored {len(open_pos)} open position(s) from Redis [{self._index or 'all'}]")
-            return positions
+            # Only restore open positions - closed ones belong in history
+            open_pos = [p for p in positions if p.get("open")]
+            if open_pos:
+                log.info(f"Restored {len(open_pos)} open position(s) from Redis [{self._index or 'all'}]")
+            else:
+                log.info(f"No open positions to restore [{self._index or 'all'}]")
+            return open_pos
         except Exception as exc:
             log.warning(f"_restore_positions: {exc}")
             return []
