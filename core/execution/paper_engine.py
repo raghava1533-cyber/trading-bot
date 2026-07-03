@@ -6,6 +6,12 @@ Writes trade history to disk on close.
 import json, logging, os, tempfile
 from datetime import datetime, date
 
+try:
+    from infra.redis_bus import set_data as _redis_set, get_data as _redis_get
+except Exception:
+    def _redis_set(k, v): pass   # type: ignore
+    def _redis_get(k): return None  # type: ignore
+
 TRADE_HISTORY_FILE = os.path.join(tempfile.gettempdir(), "trade_history.json")
 log = logging.getLogger(__name__)
 
@@ -25,7 +31,12 @@ def _save_trade_history(history: list):
         with open(TRADE_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2, default=str)
     except Exception as exc:
-        log.warning(f"_save_trade_history: {exc}")
+        log.warning(f"_save_trade_history disk: {exc}")
+    # Always save to Redis so Vercel dashboard can read it
+    try:
+        _redis_set("trade_history", json.dumps(history, default=str))
+    except Exception as exc:
+        log.warning(f"_save_trade_history redis: {exc}")
 
 
 def _pos_to_history(pos: dict, exit_reason: str, now: str) -> dict:
@@ -58,10 +69,33 @@ def _pos_to_history(pos: dict, exit_reason: str, now: str) -> dict:
 
 
 class PaperEngine:
-    def __init__(self):
-        self.positions: list = []
+    def __init__(self, index: str = ""):
+        self._index = index  # used for Redis key scoping
         self.realized:  float = 0.0
         self._history:  list  = load_trade_history()
+        # Restore open positions from Redis (survives bot restarts)
+        self.positions: list = self._restore_positions()
+
+    def _restore_positions(self) -> list:
+        """Restore open positions from Redis on startup (survives restarts)."""
+        try:
+            raw = _redis_get("all_positions")
+            if not raw:
+                return []
+            all_pos = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(all_pos, dict):
+                return []
+            if self._index:
+                positions = list(all_pos.get(self._index, []))
+            else:
+                positions = [p for plist in all_pos.values() for p in plist]
+            open_pos = [p for p in positions if p.get("open")]
+            if open_pos:
+                log.info(f"Restored {len(open_pos)} open position(s) from Redis [{self._index or 'all'}]")
+            return positions
+        except Exception as exc:
+            log.warning(f"_restore_positions: {exc}")
+            return []
 
     # ── Add position ──────────────────────────────────────────────────────────
     def add_position(self, strategy: str, legs: list, margin_info: dict = None,

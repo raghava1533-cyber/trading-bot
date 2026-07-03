@@ -101,6 +101,13 @@ class Broker:
                 return self.market_api.ltp(symbol=k)
         return _rate_limited_call(_call)
 
+    def _cache_has_valid_expiry(self, data: list) -> bool:
+        """Return False if ALL expiries in cache are in the past (stale cache)."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        expiries = {i["expiry"] for i in data if i.get("expiry") and i.get("instrument_type") == "OPTIDX"}
+        future = [e for e in expiries if e >= today]
+        return len(future) > 0
+
     def load_instruments(self) -> list:
         now = time.time()
         if self._instrument_cache and (now - self._instrument_cache_ts) < self._cache_ttl:
@@ -111,10 +118,13 @@ class Broker:
                 try:
                     with open(self.instrument_file, encoding="utf-8") as _f:
                         data = json.load(_f)
-                    self._instrument_cache    = data
-                    self._instrument_cache_ts = now
-                    log.info(f"Instruments from cache: {len(data)} rows")
-                    return data
+                    if self._cache_has_valid_expiry(data):
+                        self._instrument_cache    = data
+                        self._instrument_cache_ts = now
+                        log.info(f"Instruments from cache: {len(data)} rows")
+                        return data
+                    else:
+                        log.info("Instruments cache has only expired expiries - refreshing")
                 except Exception:
                     pass
         url = os.getenv("INSTRUMENT_MASTER_URL",

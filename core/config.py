@@ -40,7 +40,7 @@ class Settings:
     active_indices: tuple
     poll_interval_seconds: int; trade_cooldown_seconds: int; max_trades_per_day: int
     stop_loss: float; target_profit: float; target_delta: float
-    min_credit_ratio: float          # NEW: min credit/spread ratio (e.g. 0.25 = 25%)
+    min_credit_ratio: float          # min credit/spread ratio (e.g. 0.05 = 5% of spread)
     delta_hedge_threshold: float; risk_free_rate: float
     fallback_time_to_expiry_years: float; min_time_to_expiry_days: float
     spread_width_points: int; price_scan_range: float; exposure_margin_rate: float
@@ -92,7 +92,7 @@ def load_settings():
         # 0.25 = credit must be >= 25% of spread width
         # e.g. 200pt spread needs >= Rs50/share credit
         # This ensures R:R is at least 1:3 (profit:loss)
-        min_credit_ratio=_get_float("MIN_CREDIT_RATIO", 0.25),
+        min_credit_ratio=_get_float("MIN_CREDIT_RATIO", 0.05),  # 5% of spread width
         delta_hedge_threshold=_get_float("DELTA_HEDGE_THRESHOLD",0.05),
         risk_free_rate=_get_float("RISK_FREE_RATE",0.06),
         fallback_time_to_expiry_years=_get_float("FALLBACK_TIME_TO_EXPIRY_YEARS",0.1),

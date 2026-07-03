@@ -85,9 +85,15 @@ def _build_state_payload() -> dict:
     if last_update:
         state["last_update"] = last_update
 
+    # Read trade history: Redis first (persists across restarts), fallback to disk
     try:
-        from execution.paper_engine import load_trade_history
-        state["trade_history"] = load_trade_history()
+        raw_hist = get_data("trade_history")
+        if raw_hist:
+            import json as _json
+            state["trade_history"] = _json.loads(raw_hist)
+        else:
+            from execution.paper_engine import load_trade_history
+            state["trade_history"] = load_trade_history()
     except Exception:
         state["trade_history"] = []
 
@@ -778,6 +784,9 @@ def get_index_state(index: str):
 @app.get("/history")
 def get_history():
     try:
+        raw_hist = get_data("trade_history")
+        if raw_hist:
+            return {"trades": json.loads(raw_hist)}
         from execution.paper_engine import load_trade_history
         return {"trades": load_trade_history()}
     except Exception as e:

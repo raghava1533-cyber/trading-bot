@@ -677,10 +677,27 @@ async def main():
     global _state_lock
     _state_lock = asyncio.Lock()   # create inside running event loop
 
-    engines = {idx: PaperEngine() for idx in active_indices}
+    engines = {idx: PaperEngine(index=idx) for idx in active_indices}
     for idx in active_indices:
         trade_count[idx]     = 0
         last_trade_time[idx] = None
+        # Restore realized PnL from Redis so session totals are correct
+        try:
+            from infra.redis_bus import get_data as _gd
+            pnl_raw = _gd(f"pnl_{idx}")
+            if pnl_raw:
+                pnl_data = json.loads(pnl_raw)
+                engines[idx].realized = float(pnl_data.get("realized", 0))
+        except Exception:
+            pass
+        # Restore last known regime
+        try:
+            from infra.redis_bus import get_data as _gd2
+            r = _gd2(f"regime_{idx}")
+            if r:
+                _last_regime[idx] = r
+        except Exception:
+            pass
 
     log("Bot running. Press Ctrl+C to stop.")
     try:

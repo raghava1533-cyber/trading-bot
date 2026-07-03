@@ -31,7 +31,9 @@ SPREAD_WIDTH = SETTINGS.spread_width_points
 # Minimum credit as a fraction of spread width.
 # credit_per_share must be >= MIN_CREDIT_RATIO * spread_width_pts
 # e.g. 0.25 means credit must be >= 25% of spread (R:R better than 1:3)
-MIN_CREDIT_RATIO = float(getattr(SETTINGS, "min_credit_ratio", 0.25))
+# Minimum credit ratio: 5% of spread width (Rs10 on 200pt spread)
+# Set MIN_CREDIT_RATIO=0 in .env to disable the check entirely
+MIN_CREDIT_RATIO = float(getattr(SETTINGS, "min_credit_ratio", 0.05))
 
 
 def _bs_delta(S, K, T, r, sigma, opt_type):
@@ -172,13 +174,13 @@ def _find_best_spread(candidates, spot, strategy, sw, lot_size,
     buy = buy_candidates[0]
     m   = _margin_for_spread(sell_ltp, buy_ltp_fn(buy), sw, lot_size, spot)
     logging.info(
-        f"{strategy}: best credit_ratio={m['credit_ratio']:.2%} "
+        f"{strategy}: credit_ratio={m['credit_ratio']:.2%} "
         f"(min={min_credit_ratio:.2%}) R:R={m['rr_ratio']:.2f} "
         f"MaxProfit=Rs{m['max_profit']:,.0f} MaxLoss=Rs{m['max_loss']:,.0f}"
     )
-    # Skip entry if credit is too low - not worth the risk
-    if m["credit_ratio"] < min_credit_ratio * 0.5:   # below 50% of minimum -> skip
-        logging.info(f"{strategy}: credit_ratio {m['credit_ratio']:.2%} too low, skipping entry")
+    # If credit is literally zero or negative, skip (no point entering)
+    if m["credit_per_share"] <= 0:
+        logging.info(f"{strategy}: zero/negative credit, skipping entry")
         return None
     return sell, buy, m
 
