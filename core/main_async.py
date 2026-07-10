@@ -264,78 +264,82 @@ def launch_dashboard():
 
 
 # ── State writer ──────────────────────────────────────────────────────────────
-async def _write_state(engine: PaperEngine, idx: str, spot, regime: str):
-    """Write full bot state to STATE_FILE + Redis for dashboard.
+def _positions_out(engine, idx: str) -> list:
+    """Serialisable list of OPEN positions only."""
+    return [
+        {
+            "strategy":    p["strategy"],
+            "index":       p.get("index", idx),
+            "entry_time":  p.get("entry_time", ""),
+            "open":        True,
+            "unrealized":  p.get("unrealized", 0),
+            "max_profit":  p.get("max_profit", 0),
+            "max_loss":    p.get("max_loss",   0),
+            "net_credit":  p.get("net_credit", 0),
+            "margin_info": p.get("margin_info", {}),
+            "legs":        p.get("legs", []),
+        }
+        for p in engine.positions
+        if p["open"]
+    ]
 
-    Uses _state_lock to prevent concurrent read-modify-write races when
-    NIFTY / BANKNIFTY / SENSEX tasks all call this simultaneously.
-    Also merges all_positions across indices so no index overwrites another.
+
+def _merge_and_set_positions(idx: str, pos_out: list):
+    """Merge this index's open positions into Redis all_positions."""
+    from infra.redis_bus import get_data as _gd
+    try:
+        existing_raw = _gd("all_positions")
+        redis_pos = json.loads(existing_raw) if existing_raw else {}
+        if not isinstance(redis_pos, dict):
+            redis_pos = {}
+    except Exception:
+        redis_pos = {}
+    redis_pos[idx] = pos_out
+    set_data("all_positions", json.dumps(redis_pos, default=str))
+
+
+async def _write_state(engine, idx: str, spot, regime: str):
+    """Write bot state to Redis (primary) + STATE_FILE (local fallback).
+    Redis is the single source of truth read by Vercel dashboard.
     """
     try:
-        pnl = engine.get_pnl()
-        # Only write OPEN positions to Redis/STATE_FILE
-        # Closed positions live in trade_history, not all_positions
-        positions_out = [
-            {
-                "strategy":    p["strategy"],
-                "index":       p.get("index", idx),
-                "entry_time":  p.get("entry_time", ""),
-                "open":        p["open"],
-                "unrealized":  p.get("unrealized", 0),
-                "max_profit":  p.get("max_profit", 0),
-                "max_loss":    p.get("max_loss",   0),
-                "net_credit":  p.get("net_credit", 0),
-                "margin_info": p.get("margin_info", {}),
-                "legs":        p.get("legs", []),
-            }
-            for p in engine.positions
-            if p["open"]   # only open positions
-        ]
+        pnl     = engine.get_pnl()
+        pos_out = _positions_out(engine, idx)
+        now_str = dt.datetime.now().isoformat(timespec="seconds")
+
+        # Redis first - Vercel reads this
+        _merge_and_set_positions(idx, pos_out)
+        set_data(f"spot_{idx}",   str(spot))
+        set_data(f"regime_{idx}", regime)
+        set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
+        set_data("last_update",   now_str)
+
+        # STATE_FILE: atomic write (tmp then rename) to avoid corruption
         lock = _state_lock or asyncio.Lock()
         async with lock:
-            # --- Read existing state (all indices) ---
             data = {}
             if os.path.exists(STATE_FILE):
                 try:
                     with open(STATE_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
                 except Exception:
-                    data = {}
-
-            # --- Merge all_positions: keep other indices, update this one ---
-            existing_ap_raw = data.get("all_positions", "{}")
+                    data = {}   # corrupted - start fresh
             try:
-                all_pos = json.loads(existing_ap_raw) if isinstance(existing_ap_raw, str) else existing_ap_raw
-                if not isinstance(all_pos, dict):
-                    all_pos = {}
+                existing_ap = json.loads(data.get("all_positions", "{}"))
+                if not isinstance(existing_ap, dict):
+                    existing_ap = {}
             except Exception:
-                all_pos = {}
-            all_pos[idx] = positions_out
-
+                existing_ap = {}
+            existing_ap[idx] = pos_out
             data[f"spot_{idx}"]   = str(spot)
             data[f"regime_{idx}"] = regime
             data[f"pnl_{idx}"]    = json.dumps(pnl, default=str)
-            data["all_positions"] = json.dumps(all_pos, default=str)
-            data["last_update"]   = dt.datetime.now().isoformat(timespec="seconds")
-
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
+            data["all_positions"] = json.dumps(existing_ap, default=str)
+            data["last_update"]   = now_str
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, default=str)
-
-        # --- Redis (no file lock needed, Redis is atomic) ---
-        set_data(f"spot_{idx}",   str(spot))
-        set_data(f"regime_{idx}", regime)
-        set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
-        try:
-            from infra.redis_bus import get_data as _gd
-            existing_raw = _gd("all_positions")
-            redis_pos = json.loads(existing_raw) if existing_raw else {}
-            if not isinstance(redis_pos, dict):
-                redis_pos = {}
-        except Exception:
-            redis_pos = {}
-        redis_pos[idx] = positions_out
-        set_data("all_positions", json.dumps(redis_pos, default=str))
-        set_data("last_update",   data["last_update"])
+            os.replace(tmp, STATE_FILE)
     except Exception as exc:
         log(f"_write_state: {exc}", logging.WARNING)
 
@@ -469,21 +473,16 @@ async def run_cycle(broker, model, engine, idx, spot: float | None = None):
             if _last_closed_log is None or (now - _last_closed_log).seconds >= 300:
                 log(f"[{idx}] {status_msg}")
                 _last_closed_log = now
-            # Write heartbeat so dashboard shows bot is alive even when market closed
+            # Heartbeat: write current positions to Redis every cycle
+            # even during pre/post-market so Vercel always shows open positions
+            # and yesterday's open positions survive overnight.
+            pnl = engine.get_pnl()
+            pos_out = _positions_out(engine, idx)
+            _merge_and_set_positions(idx, pos_out)
             set_data(f"regime_{idx}", _last_regime.get(idx, "SIDE"))
-            set_data("last_update", dt.datetime.now().isoformat(timespec="seconds"))
-            # Write zero PnL so dashboard shows Rs0 instead of dashes
-            try:
-                from infra.redis_bus import get_data as _gd
-                if not _gd(f"pnl_{idx}"):
-                    zero_pnl = {"realized":0,"unrealized":0,"total":0,
-                                "open_positions":0,"today_realized":0,"today_trades":0,
-                                "max_profit":0,"max_loss":0,"net_credit":0}
-                    set_data(f"pnl_{idx}", json.dumps(zero_pnl))
-                if not _gd(f"spot_{idx}"):
-                    set_data(f"spot_{idx}", "0")
-            except Exception:
-                pass
+            set_data(f"pnl_{idx}",    json.dumps(pnl, default=str))
+            set_data(f"spot_{idx}",   str(spot or 0))
+            set_data("last_update",   dt.datetime.now().isoformat(timespec="seconds"))
             return
 
         cfg      = INDEX_CONFIG[idx]
